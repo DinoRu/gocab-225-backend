@@ -11,8 +11,8 @@ _ORANGE = "F97316"
 _WHITE = "FFFFFF"
 _GREY = "F5F5F5"
 
-_HEADERS = ["Référence", "Désignation", "Marque", "Modèle Compatible", "Quantité totale"]
-_QTY_COL = 5                      # colonne "Quantité totale"
+_HEADERS = ["Référence", "Désignation", "Modèle Compatible", "Quantité totale"]
+_QTY_COL = 4                      # colonne "Quantité totale"
 _HEADER_ROW = 5                  # ligne des en-têtes
 _DATA_START = _HEADER_ROW + 1    # première ligne de données
 
@@ -46,7 +46,7 @@ def build_parts_orders_workbook(
     rows: list[dict], *, start_date: date | None, end_date: date | None
 ) -> BytesIO:
     """rows : dicts issus de StatisticsService.parts_stats
-    (reference, designation, brand, model, total_quantity_ordered)."""
+    (reference, designation, models_label, total_quantity_ordered)."""
     wb = Workbook()
     ws = wb.active
     ws.title = "Commandes pièces"
@@ -83,8 +83,7 @@ def build_parts_orders_workbook(
         values = [
             r["reference"],
             r["designation"],
-            r["brand"],
-            r["model_label"],
+            r["models_label"],        # utilisation de la bonne clé
             r["total_quantity_ordered"],
         ]
         for col, value in enumerate(values, start=1):
