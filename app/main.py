@@ -16,6 +16,7 @@ def create_app() -> FastAPI:
     )
     
     origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
+    print(f"DEBUG CORS origins chargées : {origins!r}") 
     app.add_middleware(
         CORSMiddleware,
         allow_origins= origins or ["http://localhost:3000"],  # + l'URL de prod
