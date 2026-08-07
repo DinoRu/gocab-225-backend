@@ -1,0 +1,65 @@
+# ===== SECRETS — NE JAMAIS COMMITER =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib60/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ===== Environnements virtuels =====
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ===== Tests & couverture =====
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.cache/
+coverage.xml
+*.cover
+
+# ===== Bases de données locales =====
+*.sqlite3
+*.db
+
+# ===== Outils / éditeurs =====
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Fichiers générés localement (exports de test, etc.) =====
+/tmp/
+*.log
