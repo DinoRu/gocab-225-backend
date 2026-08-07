@@ -13,7 +13,7 @@ from app.core.config import settings
 
 
 
-database_url = settings.DATABASE_URL
+database_url = settings.async_database_url
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
