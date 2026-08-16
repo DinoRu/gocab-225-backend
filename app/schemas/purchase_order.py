@@ -63,3 +63,29 @@ class PurchaseOrderRead(BaseModel):
     items: list[PurchaseOrderItemRead]
     total_amount: Decimal | None     # None si aucune ligne n'a de prix
     created_at: datetime
+
+
+class OrderLineEdit(BaseModel):
+    part_id: uuid.UUID
+    quantity: int = Field(gt=0)
+    unit_price: Decimal | None = None
+
+
+class OrderLinesUpdate(BaseModel):
+    """État final voulu des lignes. Le service compare avec l'existant
+    pour déduire modifications / ajouts / suppressions."""
+    items: list[OrderLineEdit] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _no_dup(self):
+        ids = [i.part_id for i in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Une même pièce ne peut apparaître qu'une fois dans la commande.")
+        return self
+
+
+class OrderAuditEntry(BaseModel):
+    id: uuid.UUID
+    username: str | None
+    changes: list[str]
+    created_at: datetime

@@ -12,9 +12,9 @@ class LoginInput(BaseModel):
     password: str = Field(min_length=1)
 
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+# class Token(BaseModel):
+#     access_token: str
+#     token_type: str = "bearer"
 
 
 class CurrentUser(BaseModel):
@@ -25,3 +25,13 @@ class CurrentUser(BaseModel):
     role: Role
     is_active: bool
     created_at: datetime
+    
+
+class Token(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+
+
+class RefreshInput(BaseModel):
+    refresh_token: str

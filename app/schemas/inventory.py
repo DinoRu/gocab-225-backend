@@ -69,3 +69,41 @@ class PartInventoryHistoryRow(BaseModel):
     entries_between: int
     outflow: int | None
     anomaly: bool
+    
+
+
+class InventoryCountItemEdit(BaseModel):
+    part_id: uuid.UUID
+    counted_quantity: int = Field(ge=0)
+
+
+class InventoryCountEdit(BaseModel):
+    """État final voulu du comptage (les lignes non listées sont retirées)."""
+    notes: str | None = None
+    items: list[InventoryCountItemEdit] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _no_dup(self):
+        ids = [i.part_id for i in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Une même pièce ne peut apparaître qu'une fois dans le comptage.")
+        return self
+
+
+class PosteriorCount(BaseModel):
+    id: uuid.UUID
+    count_number: str
+    count_date: date
+
+
+class InventoryEditImpact(BaseModel):
+    is_leaf: bool                       # True = aucun comptage postérieur ne dépend de lui
+    editable_by_magazinier: bool        # = is_leaf
+    posterior: list[PosteriorCount]     # comptages qui seront recalculés
+
+
+class InventoryAuditEntry(BaseModel):
+    id: uuid.UUID
+    username: str | None
+    changes: list[str]
+    created_at: datetime

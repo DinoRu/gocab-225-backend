@@ -4,16 +4,19 @@ from uuid import UUID
 from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.db import constraint_name
 from app.core.exceptions import BusinessRuleError, ConflictError, NotFoundError
 from app.core.pagination import paginate
+from app.models.inventory import InventoryCount, InventoryCountItem
+from app.models.order_audit import OrderAuditLog
 from app.models.part import Part
 from app.models.purchase_order import PurchaseOrder
 from app.models.purchase_order_item import PurchaseOrderItem
 from app.models.supplier import Supplier
 from app.repositories.purchase_order import PurchaseOrderRepository
-from app.schemas.purchase_order import PurchaseOrderCreate, PurchaseOrderUpdate
+from app.schemas.purchase_order import OrderLinesUpdate, PurchaseOrderCreate, PurchaseOrderUpdate
 
 _MAX_ORDER_NUMBER_RETRIES = 5
 
@@ -294,3 +297,138 @@ class PurchaseOrderService:
             ),
             "created_at": order.created_at,
         }
+        
+    
+    async def _get_with_items(self, order_id: UUID) -> PurchaseOrder | None:
+        return await self.session.scalar(
+            select(PurchaseOrder)
+            .where(PurchaseOrder.id == order_id)
+            .options(
+                selectinload(PurchaseOrder.items).selectinload(PurchaseOrderItem.part),
+                selectinload(PurchaseOrder.supplier),
+            )
+        )
+
+    async def update_lines(
+        self, order_id: UUID, data: OrderLinesUpdate, *, user_id: UUID, username: str
+    ) -> dict:
+        order = await self._get_with_items(order_id)
+        if order is None:
+            raise NotFoundError(f"Commande {order_id} introuvable.")
+
+        # Vérifie que toutes les pièces demandées existent
+        new_by_part = {i.part_id: i for i in data.items}
+        await self._ensure_parts(list(new_by_part.keys()))
+
+        old_by_part = {it.part_id: it for it in order.items}
+
+        # Références pour les messages (anciennes + nouvelles pièces)
+        ref_map = {it.part_id: it.part.reference for it in order.items}
+        missing = [pid for pid in new_by_part if pid not in ref_map]
+        if missing:
+            rows = await self.session.execute(
+                select(Part.id, Part.reference).where(Part.id.in_(missing))
+            )
+            for pid, ref in rows.all():
+                ref_map[pid] = ref
+
+        changes: list[str] = []
+
+        # Modifications & ajouts
+        for pid, new_line in new_by_part.items():
+            ref = ref_map.get(pid, str(pid))
+            old = old_by_part.get(pid)
+            if old is None:
+                order.items.append(PurchaseOrderItem(
+                    part_id=pid, quantity=new_line.quantity, unit_price=new_line.unit_price,
+                ))
+                changes.append(
+                    f"＋ Ajout ligne « {ref} » (×{new_line.quantity}, {self._fmt_price(new_line.unit_price)})"
+                )
+            else:
+                if old.quantity != new_line.quantity:
+                    changes.append(f"Ligne « {ref} » : quantité {old.quantity} → {new_line.quantity}")
+                    old.quantity = new_line.quantity
+                if self._price_changed(old.unit_price, new_line.unit_price):
+                    changes.append(
+                        f"Ligne « {ref} » : prix {self._fmt_price(old.unit_price)} → {self._fmt_price(new_line.unit_price)}"
+                    )
+                    old.unit_price = new_line.unit_price
+
+        # Suppressions
+        for pid, old in list(old_by_part.items()):
+            if pid not in new_by_part:
+                ref = ref_map.get(pid, str(pid))
+                changes.append(f"－ Suppression ligne « {ref} »")
+                order.items.remove(old)
+                await self.session.delete(old)
+
+        # # Recalcul du total
+        # total = Decimal("0")
+        # has_price = False
+        # for it in order.items:
+        #     if it.unit_price is not None:
+        #         total += it.unit_price * it.quantity
+        #         has_price = True
+        # order.total_amount = total if has_price else None
+
+        # Trace d'audit (seulement si quelque chose a changé)
+        if changes:
+            self.session.add(OrderAuditLog(
+                order_id=order.id, user_id=user_id, username=username, changes=changes,
+            ))
+
+        try:
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise ConflictError("Modification impossible (contrainte violée).") from exc
+
+        return await self.get_detail(order_id, hide_prices=False)
+
+    async def list_audit(self, order_id: UUID) -> list[OrderAuditLog]:
+        rows = await self.session.scalars(
+            select(OrderAuditLog)
+            .where(OrderAuditLog.order_id == order_id)
+            .order_by(OrderAuditLog.created_at.desc())
+        )
+        return list(rows)
+
+    async def order_used_by_inventory(self, order: PurchaseOrder) -> bool:
+        """Vrai si un comptage d'inventaire postérieur porte sur une pièce de la commande
+        (donc a pu compter cette commande comme entrée)."""
+        part_ids = [it.part_id for it in order.items]
+        if not part_ids:
+            return False
+        n = await self.session.scalar(
+            select(func.count())
+            .select_from(InventoryCountItem)
+            .join(InventoryCount, InventoryCount.id == InventoryCountItem.inventory_count_id)
+            .where(
+                InventoryCountItem.part_id.in_(part_ids),
+                InventoryCount.count_date >= order.order_date,
+            )
+        )
+        return bool(n and n > 0)
+
+    # --- helpers ---
+    async def _ensure_parts(self, part_ids: list[UUID]) -> None:
+        unique = set(part_ids)
+        found = set(await self.session.scalars(select(Part.id).where(Part.id.in_(unique))))
+        missing = unique - found
+        if missing:
+            raise NotFoundError(f"Pièce(s) introuvable(s) : {', '.join(str(m) for m in missing)}")
+
+    @staticmethod
+    def _price_changed(old, new) -> bool:
+        if old is None and new is None:
+            return False
+        if old is None or new is None:
+            return True
+        return Decimal(old) != Decimal(new)
+
+    @staticmethod
+    def _fmt_price(v) -> str:
+        if v is None:
+            return "sans prix"
+        return f"{v:,.0f}".replace(",", " ") + " FCFA"

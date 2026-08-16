@@ -12,6 +12,10 @@ from app.models.inventory import InventoryCount, InventoryCountItem
 from app.models.purchase_request import PurchaseRequest, PurchaseRequestItem
 from app.models.user import User
 from app.models.supply_request import SupplyRequest, SupplyRequestItem
+from app.models.inventory_audit import InventoryAuditLog
+from app.models.order_audit import OrderAuditLog
+from app.models.refresh_token import RefreshToken
+from app.models.supply_consumption import SupplyLineConsumption
 
 __all__ = [
     "Base",
@@ -29,6 +33,11 @@ __all__ = [
     "PurchaseRequestItem",
     "User",
     "SupplyRequest",
-    "SupplyRequestItem"
+    "SupplyRequestItem",
+    "InventoryAuditLog",
+    "OrderAuditLog",
+    "RefreshToken",
+    "SupplyLineConsumption",
+  
 ]
 

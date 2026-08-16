@@ -38,7 +38,7 @@ async def list_parts(
     return to_page(items, total=total, page=pagination.page, limit=pagination.limit)
 
 @router.post("", response_model=PartDetail, status_code=status.HTTP_201_CREATED)
-async def create_part(payload: PartCreate, service: ServiceDep, _user: AdminOnly):
+async def create_part(payload: PartCreate, service: ServiceDep, _user: AnyUser):
     return await service.create(payload)
 
 

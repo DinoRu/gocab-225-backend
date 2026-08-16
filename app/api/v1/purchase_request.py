@@ -8,6 +8,7 @@ from app.api.deps import SessionDep
 from app.core.pagination import PaginationDep
 from app.schemas.common import Page, to_page
 from app.schemas.purchase_request import (
+    BcFromSupplyInput,
     LinkOrderInput,
     PurchaseRequestCreate,
     PurchaseRequestRead,
@@ -56,12 +57,13 @@ async def create_bc(payload: PurchaseRequestCreate, service: ServiceDep):
 from app.schemas.purchase_request import PurchaseRequestFromSupply
 from app.services.supply_request import SupplyRequestService
 
+
 @router.post("/from-supply", response_model=PurchaseRequestRead, status_code=status.HTTP_201_CREATED)
 async def create_from_supply(
-    payload: PurchaseRequestFromSupply,
+    payload: BcFromSupplyInput,
     service: ServiceDep,
     session: SessionDep,
-    _user: AdminOnly,          # seul l'admin transforme un besoin en bon
+    _user: AdminOnly,
 ):
     supply_service = SupplyRequestService(session)
     return await service.create_from_supply(payload, service_supply=supply_service)

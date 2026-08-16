@@ -47,6 +47,8 @@ class SupplyRequestItemRead(BaseModel):
     reference: str
     designation: str
     quantity: int
+    ordered_quantity: int      # déjà parti en bon
+    remaining_quantity: int    # reste à commander
 
 
 class LinkedBcRead(BaseModel):

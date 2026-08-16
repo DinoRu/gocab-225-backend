@@ -75,6 +75,7 @@ class PurchaseRequestRead(BaseModel):
     expected_date: date | None
     status: Status
     purchase_order_id: uuid.UUID | None
+    supply_request_id: uuid.UUID | None = None
     order_number: str | None
     notes: str | None
     items: list[PurchaseRequestItemRead]
@@ -93,3 +94,18 @@ class PurchaseRequestFromSupply(BaseModel):
     # Lignes ajustables : tu peux ne commander qu'une partie du besoin (éclatement),
     # et ajouter les prix. Si absent, on reprend toutes les lignes du besoin sans prix.
     items: list[PurchaseRequestItemCreate] | None = None
+    
+
+class BcFromSupplyItem(BaseModel):
+    supply_request_item_id: uuid.UUID
+    quantity: int = Field(gt=0)
+    unit_price: Decimal | None = None
+
+
+class BcFromSupplyInput(BaseModel):
+    supply_request_id: uuid.UUID
+    supplier_id: uuid.UUID
+    request_date: date
+    expected_date: date | None = None
+    notes: str | None = None
+    items: list[BcFromSupplyItem] = Field(min_length=1)

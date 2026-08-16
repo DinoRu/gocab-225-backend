@@ -5,7 +5,7 @@ from fastapi.security import OAuth2PasswordRequestForm
 
 from app.api.deps import SessionDep
 from app.api.auth_deps import CurrentUserDep
-from app.schemas.auth import CurrentUser, Token
+from app.schemas.auth import CurrentUser, Token, RefreshInput
 from app.services.auth import AuthService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -16,10 +16,19 @@ async def login(
     session: SessionDep,
     form: Annotated[OAuth2PasswordRequestForm, Depends()],
 ):
-    """Login OAuth2 standard : champs 'username' et 'password' en form-data.
-    Compatible avec le bouton Authorize de Swagger."""
-    token = await AuthService(session).authenticate(form.username, form.password)
-    return {"access_token": token, "token_type": "bearer"}
+    access, refresh = await AuthService(session).authenticate(form.username, form.password)
+    return {"access_token": access, "refresh_token": refresh, "token_type": "bearer"}
+
+
+@router.post("/refresh", response_model=Token)
+async def refresh(session: SessionDep, payload: RefreshInput):
+    access, new_refresh = await AuthService(session).refresh(payload.refresh_token)
+    return {"access_token": access, "refresh_token": new_refresh, "token_type": "bearer"}
+
+
+@router.post("/logout", status_code=204)
+async def logout(session: SessionDep, payload: RefreshInput):
+    await AuthService(session).logout(payload.refresh_token)
 
 
 @router.get("/me", response_model=CurrentUser)

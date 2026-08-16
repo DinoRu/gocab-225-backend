@@ -18,7 +18,7 @@ class Pagination:
 
 def pagination_params(
     page: Annotated[int, Query(ge=1)] = 1,
-    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    limit: Annotated[int, Query(ge=1, le=2000)] = 20,
 ) -> Pagination:
     return Pagination(page=page, limit=limit)
 

@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import Integer, cast, func, select
+from sqlalchemy.orm import selectinload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +15,10 @@ from app.models.purchase_order import PurchaseOrder
 from app.models.purchase_request import PurchaseRequest, PurchaseRequestItem
 from app.models.supplier import Supplier
 from app.repositories.purchase_request import PurchaseRequestRepository
-from app.schemas.purchase_request import PurchaseRequestCreate, PurchaseRequestItemCreate, PurchaseRequestUpdate
+from app.schemas.purchase_request import PurchaseRequestCreate, PurchaseRequestUpdate
+from app.models.supply_request import SupplyRequest
+from app.models.supply_consumption import SupplyLineConsumption
+from app.services._supply_consumption import consumed_by_item
 
 _MAX_RETRIES = 5
 _STATUS_FLOW = {"draft": "sent", "sent": "received"}
@@ -48,6 +52,7 @@ def serialize(pr: PurchaseRequest) -> dict:
         "expected_date": pr.expected_date,
         "status": pr.status,
         "purchase_order_id": pr.purchase_order_id,
+        "supply_request_id": pr.supply_request_id, 
         "order_number": None,   # rempli par le service si lié (voir get_detail)
         "notes": pr.notes,
         "items": items,
@@ -122,11 +127,8 @@ class PurchaseRequestService:
     
     
     async def create_from_supply(self, data, *, service_supply) -> dict:
-        """Crée un bon à partir d'un besoin. Pré-remplit les lignes si non fournies,
-        lie le bon au besoin, et fait passer le besoin en 'in_progress'."""
-        from app.models.supply_request import SupplyRequest, SupplyRequestItem
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
+        """Crée un bon depuis un besoin, en consommant des quantités précises
+        de lignes précises du besoin (suivi ligne par ligne)."""
 
         sr = await self.session.scalar(
             select(SupplyRequest)
@@ -135,18 +137,31 @@ class PurchaseRequestService:
         )
         if sr is None:
             raise NotFoundError(f"Besoin {data.supply_request_id} introuvable.")
-
         await self._ensure_supplier(data.supplier_id)
 
-        # Lignes : celles fournies (ajustées) ou reprise intégrale du besoin sans prix.
-        if data.items is not None:
-            lines = data.items
-        else:
-            lines = [
-                PurchaseRequestItemCreate(part_id=i.part_id, quantity=i.quantity, unit_price=None)
-                for i in sr.items
-            ]
-        await self._ensure_parts([l.part_id for l in lines])
+        # data.items doit maintenant porter, par ligne : supply_request_item_id,
+        # quantity, unit_price. On vérifie chaque ligne contre le reste disponible.
+        if not data.items:
+            raise BusinessRuleError("Sélectionnez au moins une ligne à commander.")
+
+        sr_items_by_id = {it.id: it for it in sr.items}
+        consumed = await consumed_by_item(self.session, [it.id for it in sr.items])
+
+        # Validation des quantités demandées vs reste.
+        for line in data.items:
+            sid = getattr(line, "supply_request_item_id", None)
+            if sid is None or sid not in sr_items_by_id:
+                raise BusinessRuleError("Ligne de besoin invalide dans la sélection.")
+            remaining = sr_items_by_id[sid].quantity - consumed.get(sid, 0)
+            if line.quantity <= 0:
+                raise BusinessRuleError("Chaque quantité doit être supérieure à zéro.")
+            if line.quantity > remaining:
+                ref = sr_items_by_id[sid].part.reference
+                raise BusinessRuleError(
+                    f"La ligne « {ref} » n'a plus que {remaining} unité(s) disponible(s)."
+                )
+
+        await self._ensure_parts([sr_items_by_id[l.supply_request_item_id].part_id for l in data.items])
 
         last_exc = None
         for _ in range(_MAX_RETRIES):
@@ -158,14 +173,26 @@ class PurchaseRequestService:
                 expected_date=data.expected_date,
                 notes=data.notes,
                 status="draft",
-                supply_request_id=sr.id,        # ← le lien de traçabilité
+                supply_request_id=sr.id,
                 items=[
-                    PurchaseRequestItem(part_id=l.part_id, quantity=l.quantity, unit_price=l.unit_price)
-                    for l in lines
+                    PurchaseRequestItem(
+                        part_id=sr_items_by_id[l.supply_request_item_id].part_id,
+                        quantity=l.quantity,
+                        unit_price=l.unit_price,
+                    )
+                    for l in data.items
                 ],
             )
             self.session.add(pr)
             try:
+                await self.session.flush()   # pour obtenir les id des lignes du bon
+                # Enregistre la consommation ligne à ligne.
+                for pr_item, l in zip(pr.items, data.items):
+                    self.session.add(SupplyLineConsumption(
+                        supply_request_item_id=l.supply_request_item_id,
+                        purchase_request_item_id=pr_item.id,
+                        quantity=l.quantity,
+                    ))
                 await self.session.commit()
             except IntegrityError as exc:
                 await self.session.rollback()
@@ -175,7 +202,6 @@ class PurchaseRequestService:
                 self._translate(exc)
                 raise
             else:
-                # Le besoin passe en "en cours" (s'il était encore ouvert).
                 await service_supply.mark_in_progress_if_open(sr.id)
                 return await self.get_detail(pr.id)
         raise ConflictError("Impossible de générer un numéro de bon unique.") from last_exc
@@ -184,9 +210,11 @@ class PurchaseRequestService:
         pr = await self.repo.get_with_items(request_id)
         if pr is None:
             raise NotFoundError(f"Bon de commande {request_id} introuvable.")
-        if pr.status == "received":
-            raise BusinessRuleError("Un bon déjà réceptionné ne peut plus être modifié.")
-
+        if pr.status != "draft":
+            raise BusinessRuleError(
+                "Ce bon a déjà été envoyé au fournisseur et ne peut plus être modifié. "
+                "Créez un nouveau bon si nécessaire."
+            )
         fields = data.model_dump(exclude_unset=True)
         if fields.get("supplier_id") is not None:
             await self._ensure_supplier(fields["supplier_id"])

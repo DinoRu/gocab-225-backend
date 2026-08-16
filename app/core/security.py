@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
@@ -38,3 +40,14 @@ def decode_access_token(token: str) -> dict | None:
         return jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.JWT_ALGORITHM])
     except JWTError:
         return None
+
+
+def generate_refresh_token() -> str:
+    """Jeton opaque à haute entropie (envoyé au client, jamais stocké en clair)."""
+    return secrets.token_urlsafe(48)
+
+
+def hash_refresh_token(token: str) -> str:
+    """Hash SHA-256 stocké en base. Pas besoin de bcrypt : le jeton est déjà
+    aléatoire et à haute entropie (contrairement à un mot de passe)."""
+    return hashlib.sha256(token.encode()).hexdigest()

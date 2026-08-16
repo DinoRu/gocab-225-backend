@@ -8,14 +8,17 @@ from app.api.deps import SessionDep
 from app.core.pagination import PaginationDep
 from app.schemas.common import Page, to_page
 from app.schemas.inventory import (
+    InventoryAuditEntry,
     InventoryCountCreate,
+    InventoryCountEdit,
     InventoryCountRead,
     InventoryCountUpdate,
+    InventoryEditImpact,
     PartInventoryHistoryRow,
 )
 from app.services.inventory import InventoryService
 from app.services.inventory_export import build_inventory_workbook
-from app.api.auth_deps import require_role
+from app.api.auth_deps import AdminOnly, CurrentUserDep, require_role
 
 router = APIRouter(prefix="/inventory", tags=["inventory"], dependencies=[Depends(require_role("admin", "magazinier"))])
 
@@ -54,9 +57,9 @@ async def get_count(count_id: UUID, service: ServiceDep):
     return await service.get_detail(count_id)
 
 
-@router.patch("/counts/{count_id}", response_model=InventoryCountRead)
-async def update_count(count_id: UUID, payload: InventoryCountUpdate, service: ServiceDep):
-    return await service.update(count_id, payload)
+# @router.patch("/counts/{count_id}", response_model=InventoryCountRead)
+# async def update_count(count_id: UUID, payload: InventoryCountUpdate, service: ServiceDep):
+#     return await service.update(count_id, payload)
 
 
 @router.delete("/counts/{count_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -78,3 +81,26 @@ async def export_count(count_id: UUID, service: ServiceDep):
 @router.get("/parts/{part_id}/history", response_model=list[PartInventoryHistoryRow])
 async def part_inventory_history(part_id: UUID, service: ServiceDep):
     return await service.part_history(part_id)
+
+
+@router.get("/counts/{count_id}/edit-impact", response_model=InventoryEditImpact)
+async def count_edit_impact(count_id: UUID, service: ServiceDep, _user: CurrentUserDep):
+    return await service.edit_impact(count_id)
+
+
+@router.patch("/counts/{count_id}")
+async def edit_count(
+    count_id: UUID,
+    payload: InventoryCountEdit,
+    service: ServiceDep,
+    user: CurrentUserDep,
+):
+    return await service.update_count(
+        count_id, payload,
+        user_id=user.id, username=(user.full_name or user.username), role=user.role,
+    )
+
+
+@router.get("/counts/{count_id}/audit", response_model=list[InventoryAuditEntry])
+async def count_audit(count_id: UUID, service: ServiceDep, _user: AdminOnly):
+    return await service.list_audit(count_id)

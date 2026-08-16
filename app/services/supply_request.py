@@ -14,6 +14,7 @@ from app.models.supplier import Supplier
 from app.models.supply_request import SupplyRequest, SupplyRequestItem
 from app.repositories.supply_request import SupplyRequestRepository
 from app.schemas.supply_request import SupplyRequestCreate, SupplyRequestUpdate
+from app.services._supply_consumption import consumed_by_item
 
 _MAX_RETRIES = 5
 
@@ -39,7 +40,7 @@ async def _linked_bcs(session: AsyncSession, sr_id: UUID) -> list[dict]:
     ]
 
 
-def _serialize(sr: SupplyRequest, linked: list[dict]) -> dict:
+def _serialize(sr: SupplyRequest, linked: list[dict], consumed: dict) -> dict:
     items = sorted(
         (
             {
@@ -48,6 +49,8 @@ def _serialize(sr: SupplyRequest, linked: list[dict]) -> dict:
                 "reference": it.part.reference,
                 "designation": it.part.designation,
                 "quantity": it.quantity,
+                "ordered_quantity": consumed.get(it.id, 0),          # déjà parti en bon
+                "remaining_quantity": it.quantity - consumed.get(it.id, 0),
             }
             for it in sr.items
         ),
@@ -81,7 +84,8 @@ class SupplyRequestService:
     async def get_detail(self, request_id: UUID) -> dict:
         sr = await self.get_or_404(request_id)
         linked = await _linked_bcs(self.session, sr.id)
-        return _serialize(sr, linked)
+        consumed = await consumed_by_item(self.session, [it.id for it in sr.items])
+        return _serialize(sr, linked, consumed)
 
     async def list_requests(self, *, search, status, created_by, start_date, end_date, page, limit):
         stmt = self.repo.list_stmt(
@@ -93,7 +97,8 @@ class SupplyRequestService:
         out = []
         for sr in items:
             linked = await _linked_bcs(self.session, sr.id)
-            out.append(_serialize(sr, linked))
+            consumed = await consumed_by_item(self.session, [it.id for it in sr.items])
+            out.append(_serialize(sr, linked, consumed))
         return out, total
 
     async def create(self, data: SupplyRequestCreate, *, created_by: UUID) -> dict:
@@ -131,18 +136,64 @@ class SupplyRequestService:
         if sr is None:
             raise NotFoundError(f"Besoin {request_id} introuvable.")
         if sr.status == "fulfilled":
-            raise BusinessRuleError("Un besoin traité ne peut plus être modifié.")
+            raise BusinessRuleError("Un besoin clôturé ne peut plus être modifié.")
+
         fields = data.model_dump(exclude_unset=True)
         if fields.get("request_date") is not None:
             sr.request_date = fields["request_date"]
         if "notes" in fields:
             sr.notes = fields["notes"]
+
         if data.items is not None:
             await self._ensure_parts([i.part_id for i in data.items])
-            sr.items.clear()
-            await self.session.flush()
-            for i in data.items:
-                sr.items.append(SupplyRequestItem(part_id=i.part_id, quantity=i.quantity))
+
+            # Consommation actuelle, par ligne existante (clé = part_id, plus stable ici).
+            consumed = await consumed_by_item(self.session, [it.id for it in sr.items])
+            consumed_by_part = {}
+            for it in sr.items:
+                c = consumed.get(it.id, 0)
+                if c > 0:
+                    consumed_by_part[it.part_id] = c
+
+            new_by_part = {i.part_id: i for i in data.items}
+
+            # 1) On ne peut pas SUPPRIMER une ligne déjà consommée…
+            for part_id, c in consumed_by_part.items():
+                if part_id not in new_by_part:
+                    ref = next((it.part.reference for it in sr.items if it.part_id == part_id), str(part_id))
+                    raise BusinessRuleError(
+                        f"La ligne « {ref} » a déjà {c} unité(s) en commande : "
+                        f"elle ne peut pas être supprimée."
+                    )
+
+            # 2) …ni descendre sa quantité sous ce qui est déjà commandé.
+            for part_id, line in new_by_part.items():
+                c = consumed_by_part.get(part_id, 0)
+                if c > 0 and line.quantity < c:
+                    ref = next((it.part.reference for it in sr.items if it.part_id == part_id), str(part_id))
+                    raise BusinessRuleError(
+                        f"La ligne « {ref} » a déjà {c} unité(s) en commande : "
+                        f"la quantité ne peut pas être inférieure à {c}."
+                    )
+
+            # Reconstruction : on préserve l'id des lignes consommées (pour ne pas
+            # casser les liaisons), on ajoute/retire le reste.
+            existing_by_part = {it.part_id: it for it in sr.items}
+            keep_parts = set(new_by_part.keys())
+
+            # Retirer les lignes disparues (forcément non consommées, vérifié plus haut).
+            for it in list(sr.items):
+                if it.part_id not in keep_parts:
+                    sr.items.remove(it)
+                    await self.session.delete(it)
+
+            # Mettre à jour / ajouter.
+            for part_id, line in new_by_part.items():
+                if part_id in existing_by_part:
+                    existing_by_part[part_id].quantity = line.quantity   # in-place → liaisons intactes
+                else:
+                    sr.items.append(SupplyRequestItem(part_id=part_id, quantity=line.quantity))
+
         try:
             await self.session.commit()
         except IntegrityError as exc:

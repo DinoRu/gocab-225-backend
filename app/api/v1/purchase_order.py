@@ -5,9 +5,12 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, status
 
 from app.api.deps import SessionDep
+from app.core.exceptions import NotFoundError
 from app.core.pagination import PaginationDep
 from app.schemas.common import Page, to_page
 from app.schemas.purchase_order import (
+    OrderAuditEntry,
+    OrderLinesUpdate,
     PurchaseOrderCreate,
     PurchaseOrderRead,
     PurchaseOrderUpdate,
@@ -75,3 +78,29 @@ async def update_order(order_id: UUID, payload: PurchaseOrderUpdate, service: Se
 @router.delete("/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_order(order_id: UUID, service: ServiceDep, _user: AdminOnly):
     await service.delete(order_id)
+    
+
+@router.patch("/{order_id}/lines")
+async def edit_order_lines(
+    order_id: UUID,
+    payload: OrderLinesUpdate,
+    service: ServiceDep,
+    user: AdminOnly,
+):
+    return await service.update_lines(
+        order_id, payload,
+        user_id=user.id, username=(user.full_name or user.username),
+    )
+
+
+@router.get("/{order_id}/audit", response_model=list[OrderAuditEntry])
+async def order_audit(order_id: UUID, service: ServiceDep, _user: AdminOnly):
+    return await service.list_audit(order_id)
+
+
+@router.get("/{order_id}/inventory-impact")
+async def order_inventory_impact(order_id: UUID, service: ServiceDep, _user: AdminOnly):
+    order = await service._get_with_items(order_id)
+    if order is None:
+        raise NotFoundError(f"Commande {order_id} introuvable.")
+    return {"used_by_inventory": await service.order_used_by_inventory(order)}

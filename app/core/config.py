@@ -15,7 +15,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
 
     SECRET_KEY: str                              # obligatoire, depuis l'environnement
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 720       # 12h par défaut
+    # ACCESS_TOKEN_EXPIRE_MINUTES: int = 720       # 12h par défaut
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30        # court désormais (le refresh prend le relais)
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 30          # durée de vie du refresh token
     JWT_ALGORITHM: str = "HS256"
     CORS_ORIGINS: str = ""
 
