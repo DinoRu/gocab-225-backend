@@ -39,7 +39,7 @@ class BrandQuantity(BaseModel):
 
 
 class ModelQuantity(BaseModel):
-    model_id: uuid.UUID
+    model_id: uuid.UUID | None 
     name: str
     brand: str
     total_quantity: int
