@@ -9,7 +9,7 @@ from app.database.base import Base, UUIDMixin, TimestampMixin
 class User(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "users"
     __table_args__ = (
-        CheckConstraint("role IN ('admin','magazinier')", name="ck_users_role"),
+        CheckConstraint("role IN ('admin','magazinier', 'centre')", name="ck_users_role"),
     )
 
     username: Mapped[str] = mapped_column(String(50), unique=True, nullable=False, index=True)

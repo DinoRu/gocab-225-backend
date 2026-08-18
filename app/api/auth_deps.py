@@ -61,4 +61,4 @@ def require_role(*allowed_roles: str):
 
 # Raccourcis prêts à l'emploi pour la tranche 2.
 AdminOnly = Annotated[User, Depends(require_role("admin"))]
-AnyUser = Annotated[User, Depends(require_role("admin", "magazinier"))]
+AnyUser = Annotated[User, Depends(require_role("admin", "magazinier", "centre"))]

@@ -36,3 +36,4 @@ class PartStatSummary(BaseModel):
     last_3_months: int
     last_6_months: int
     last_12_months: int
+    

@@ -12,7 +12,9 @@ from app.api.v1 import (
     purchase_request,
     auth,
     user,
-    supply_request
+    supply_request,
+    sales,
+    center_request
 )
 
 api_router = APIRouter()
@@ -30,3 +32,5 @@ api_router.include_router(inventory.router)
 api_router.include_router(purchase_request.router)
 api_router.include_router(user.router)
 api_router.include_router(supply_request.router)
+api_router.include_router(sales.router)
+api_router.include_router(center_request.router)
