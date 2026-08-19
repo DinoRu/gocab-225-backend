@@ -34,6 +34,11 @@ router = APIRouter(
 )
 
 
+# @router.get("/units", response_model=list[str])
+# async def list_units():
+#     return SALES_UNITS
+
+
 @router.get("/dashboard", response_model=SalesDashboardResponse)
 async def sales_dashboard(
     session: SessionDep,

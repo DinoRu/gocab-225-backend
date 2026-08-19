@@ -134,6 +134,7 @@ def serialize_sale(so: SalesOrder) -> dict:
             "product_id": it.product_id,
             "designation": it.designation,
             "quantity": it.quantity,
+            "unit": it.unit,
             "purchase_price": it.purchase_price,
             "sale_price": it.sale_price,
             "line_total": line_total,
@@ -201,6 +202,7 @@ class SalesOrderService:
                         product_id=i.product_id,
                         designation=i.designation.strip(),
                         quantity=i.quantity,
+                        unit=i.unit,
                         purchase_price=i.purchase_price,
                         sale_price=i.sale_price,
                     )
@@ -241,6 +243,7 @@ class SalesOrderService:
                     product_id=i.product_id,
                     designation=i.designation.strip(),
                     quantity=i.quantity,
+                    unit=i.unit,
                     purchase_price=i.purchase_price,
                     sale_price=i.sale_price,
                 ))

@@ -30,6 +30,7 @@ class SalesProduct(Base, UUIDMixin, TimestampMixin):
     designation: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     default_purchase_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
     default_sale_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 2), nullable=True)
+    default_unit: Mapped[str | None] = mapped_column(String(20), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -70,6 +71,7 @@ class SalesOrderItem(Base, UUIDMixin):
     )
     designation: Mapped[str] = mapped_column(String(255), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False, default="pièce")
     purchase_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     sale_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
 
@@ -163,6 +165,7 @@ class SalesProformaItem(Base, UUIDMixin):
     )
     designation: Mapped[str] = mapped_column(String(255), nullable=False)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False, default="pièce")
     sale_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 

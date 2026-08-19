@@ -10,7 +10,7 @@ from app.api.auth_deps import require_role, CurrentUserDep, AdminOnly
 from app.core.pagination import PaginationDep
 from app.schemas.common import Page, to_page
 from app.schemas.center_request import (
-    CenterRequestCreate, CenterRequestRead, CenterRequestUpdate, Status,
+    CenterRequestCreate, CenterRequestRead, CenterRequestUpdate, Status, PreparationListRead
 )
 from app.services.center_request import CenterRequestService
 
@@ -82,3 +82,7 @@ class StatusInput(BaseModel):
 @router.post("/{request_id}/status", response_model=CenterRequestRead)
 async def set_status(request_id: UUID, payload: StatusInput, service: ServiceDep, _a: AdminOnly):
     return await service.set_status(request_id, payload.status)
+
+@router.get("/preparation/list", response_model=PreparationListRead)
+async def preparation_list(service: ServiceDep, _a: AdminOnly):
+    return await service.preparation_list()

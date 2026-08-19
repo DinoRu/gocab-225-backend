@@ -29,6 +29,7 @@ def _serialize(pf: SalesProforma, sale_number: str | None) -> dict:
             "product_id": it.product_id,
             "designation": it.designation,
             "quantity": it.quantity,
+             "unit": it.unit,
             "sale_price": it.sale_price,
             "line_total": line_total,
         })
@@ -184,6 +185,7 @@ class SalesProformaService:
                         product_id=it.product_id,
                         designation=it.designation,
                         quantity=it.quantity,
+                        unit=it.unit,      
                         purchase_price=purchase_by_item[it.id],
                         sale_price=it.sale_price,      # prix de vente de la proforma
                     )

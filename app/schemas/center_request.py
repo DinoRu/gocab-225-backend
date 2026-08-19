@@ -57,3 +57,25 @@ class CenterRequestRead(BaseModel):
     prepared_count: int         # nb de lignes cochées
     total_items: int
     created_at: datetime
+    
+    
+class PrepSource(BaseModel):
+    request_number: str
+    vehicle: str
+    plate_number: str | None
+    quantity: int
+    note: str | None
+
+
+class PrepItem(BaseModel):
+    designation: str
+    from_catalog: bool
+    total_quantity: int
+    sources: list[PrepSource]
+
+
+class PreparationListRead(BaseModel):
+    generated_at: datetime
+    request_count: int
+    distinct_parts: int
+    items: list[PrepItem]

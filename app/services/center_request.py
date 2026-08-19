@@ -175,3 +175,54 @@ class CenterRequestService:
             )
         )
         return f"{prefix}{(last or 0) + 1:03d}"
+
+    async def preparation_list(self) -> dict:
+        """Liste consolidée des pièces à rassembler (demandes nouvelles + préparées).
+        Regroupe par part_id (catalogue) ou par désignation normalisée (libre)."""
+        reqs = (await self.session.scalars(
+            select(CenterRequest)
+            .where(CenterRequest.status.in_(["nouvelle", "preparee"]))
+            .options(selectinload(CenterRequest.items))
+            .order_by(CenterRequest.request_date.asc())
+        )).all()
+
+        # clé de regroupement → agrégat
+        groups: dict[str, dict] = {}
+        for req in reqs:
+            vehicle = f"{req.vehicle_brand} {req.vehicle_model}"
+            for it in req.items:
+                if it.part_id is not None:
+                    key = f"cat:{it.part_id}"
+                    from_catalog = True
+                else:
+                    key = f"free:{' '.join(it.designation.lower().split())}"
+                    from_catalog = False
+
+                if key not in groups:
+                    groups[key] = {
+                        "designation": it.designation,
+                        "from_catalog": from_catalog,
+                        "total_quantity": 0,
+                        "sources": [],
+                    }
+                groups[key]["total_quantity"] += it.quantity
+                groups[key]["sources"].append({
+                    "request_number": req.request_number,
+                    "vehicle": vehicle,
+                    "plate_number": req.plate_number,
+                    "quantity": it.quantity,
+                    "note": it.note,
+                })
+
+        # tri : catalogue d'abord, puis alphabétique
+        items = sorted(
+            groups.values(),
+            key=lambda g: (not g["from_catalog"], g["designation"].lower()),
+        )
+
+        return {
+            "generated_at": datetime.utcnow(),
+            "request_count": len(reqs),
+            "distinct_parts": len(items),
+            "items": items,
+        }

@@ -40,6 +40,7 @@ class SalesProductCreate(BaseModel):
     designation: str = Field(min_length=1, max_length=255)
     default_purchase_price: Decimal | None = Field(default=None, ge=0)
     default_sale_price: Decimal | None = Field(default=None, ge=0)
+    default_unit: str | None = None
     notes: str | None = None
 
 
@@ -48,6 +49,7 @@ class SalesProductUpdate(BaseModel):
     designation: str | None = Field(default=None, min_length=1, max_length=255)
     default_purchase_price: Decimal | None = Field(default=None, ge=0)
     default_sale_price: Decimal | None = Field(default=None, ge=0)
+    default_unit: str | None = None
     notes: str | None = None
 
 
@@ -58,6 +60,7 @@ class SalesProductRead(BaseModel):
     designation: str
     default_purchase_price: Decimal | None
     default_sale_price: Decimal | None
+    default_unit: str | None = None
     notes: str | None
     created_at: datetime
 
@@ -67,6 +70,7 @@ class SalesOrderItemCreate(BaseModel):
     product_id: uuid.UUID | None = None       # None = ligne libre (hors catalogue)
     designation: str = Field(min_length=1, max_length=255)
     quantity: int = Field(gt=0)
+    unit: str = Field(default="pièce", max_length=20)
     purchase_price: Decimal = Field(ge=0)     # obligatoire → marge toujours calculable
     sale_price: Decimal = Field(ge=0)
 
@@ -90,6 +94,7 @@ class SalesOrderItemRead(BaseModel):
     product_id: uuid.UUID | None
     designation: str
     quantity: int
+    unit: str  
     purchase_price: Decimal
     sale_price: Decimal
     line_total: Decimal        # sale_price * quantity
@@ -200,6 +205,7 @@ class ProformaItemCreate(BaseModel):
     product_id: uuid.UUID | None = None
     designation: str = Field(min_length=1, max_length=255)
     quantity: int = Field(gt=0)
+    unit: str = Field(default="pièce", max_length=20)  
     sale_price: Decimal = Field(ge=0)
 
 
@@ -222,9 +228,10 @@ class ProformaItemRead(BaseModel):
     product_id: uuid.UUID | None
     designation: str
     quantity: int
+    unit: str = Field(default="pièce", max_length=20)
     sale_price: Decimal
     line_total: Decimal
-
+   
 
 class SalesProformaRead(BaseModel):
     id: uuid.UUID
