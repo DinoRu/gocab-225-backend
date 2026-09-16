@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import constraint_name
 from app.core.exceptions import BusinessRuleError, ConflictError, NotFoundError
+from app.core.helpers import ensure_catalog_product
 from app.core.pagination import paginate
-from app.models.sales import SalesClient, SalesProduct, SalesOrder, SalesOrderItem
+from app.models.sales import SalesClient, SalesProduct, SalesOrder, SalesOrderItem, SalesProforma, SalesProformaItem
 from app.repositories.sales import (
     SalesClientRepository, SalesProductRepository, SalesOrderRepository,
 )
@@ -18,9 +19,13 @@ from app.schemas.sales import (
     SalesProductCreate, SalesProductUpdate,
     SalesOrderCreate, SalesOrderUpdate,
 )
+from app.services._sales_delivery import delivered_by_order_item
+from app.services._sales_balance import allocated_by_order
 from app.core.tax import vat_amount, ttc_amount, VAT_RATE
 
+
 _MAX_RETRIES = 5
+
 
 
 # ======================= CLIENTS =======================
@@ -162,6 +167,36 @@ def serialize_sale(so: SalesOrder) -> dict:
         "created_at": so.created_at,
     }
 
+
+async def compute_delivery_status(session, so: SalesOrder) -> str:
+    """non_livree / partiellement_livree / livree — calculé depuis les BL."""
+    item_ids = [it.id for it in so.items]
+    delivered = await delivered_by_order_item(session, item_ids)
+    total_ordered = sum(it.quantity for it in so.items)
+    total_delivered = sum(delivered.get(it.id, 0) for it in so.items)
+    if total_delivered == 0:
+        return "non_livree"
+    if total_delivered >= total_ordered:
+        return "livree"
+    return "partiellement_livree"
+
+
+async def compute_payment_status(session: AsyncSession, so: SalesOrder) -> dict:
+    """Statut de paiement dérivé d'une vente + reste dû (en TTC)."""
+    allocated = await allocated_by_order(session, [so.id])
+    paid = allocated.get(so.id, Decimal("0"))
+    total_ht = sum((it.sale_price * it.quantity for it in so.items), Decimal("0"))
+    total_ttc = ttc_amount(total_ht)
+    remaining = total_ttc - paid
+    if paid <= 0:
+        status = "impayee"
+    elif remaining <= 0:
+        status = "payee"
+    else:
+        status = "partiellement_payee"
+    return {"payment_status": status, "amount_paid": paid, "amount_due": remaining if remaining > 0 else Decimal("0")}
+
+
 class SalesOrderService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
@@ -174,14 +209,45 @@ class SalesOrderService:
         return so
 
     async def get_detail(self, order_id: UUID) -> dict:
-        return serialize_sale(await self.get_or_404(order_id))
+        so = await self.get_or_404(order_id)
+        data = serialize_sale(so)
+        data["delivery_status"] = await compute_delivery_status(self.session, so)
+        pay = await compute_payment_status(self.session, so)
+        data.update(pay)   # payment_status, amount_paid, amount_due
+        return data
 
     async def list_sales(self, *, search, client_id, start_date, end_date, page, limit):
-        stmt = self.repo.list_stmt(
-            search=search, client_id=client_id, start_date=start_date, end_date=end_date
-        )
+        stmt = self.repo.list_stmt(search=search, client_id=client_id, start_date=start_date, end_date=end_date)
         items, total = await paginate(self.session, stmt, page=page, limit=limit)
-        return [serialize_sale(so) for so in items], total
+
+        all_item_ids = [it.id for so in items for it in so.items]
+        delivered = await delivered_by_order_item(self.session, all_item_ids)
+        allocated = await allocated_by_order(self.session, [so.id for so in items])
+
+        result = []
+        for so in items:
+            data = serialize_sale(so)
+            # livraison
+            total_ordered = sum(it.quantity for it in so.items)
+            total_delivered = sum(delivered.get(it.id, 0) for it in so.items)
+            data["delivery_status"] = (
+                "non_livrée" if total_delivered == 0
+                else "livrée" if total_delivered >= total_ordered
+                else "partiellement_livrée"
+            )
+            # paiement
+            paid = allocated.get(so.id, Decimal("0"))
+            total_ttc = ttc_amount(data["total_sale"])   # total_sale = HT dans serialize_sale
+            remaining = total_ttc - paid
+            data["payment_status"] = (
+                "impayee" if paid <= 0
+                else "payee" if remaining <= 0
+                else "partiellement_payee"
+            )
+            data["amount_paid"] = paid
+            data["amount_due"] = remaining if remaining > 0 else Decimal("0")
+            result.append(data)
+        return result, total
 
     async def _ensure_client(self, client_id: UUID) -> None:
         if await self.session.scalar(select(SalesClient.id).where(SalesClient.id == client_id)) is None:
@@ -209,6 +275,16 @@ class SalesOrderService:
                     for i in data.items
                 ],
             )
+            # Enregistrement auto au catalogue pour les lignes libres cochées
+            for i in data.items:
+                if getattr(i, "add_to_catalog", False) and i.product_id is None:
+                    await ensure_catalog_product(
+                        session=self.session,
+                        designation=i.designation,
+                        purchase_price=i.purchase_price,
+                        sale_price=i.sale_price,
+                        unit=i.unit or "pièce",
+                    )
             self.session.add(so)
             try:
                 await self.session.commit()
@@ -266,3 +342,73 @@ class SalesOrderService:
             )
         )
         return f"{prefix}{(last or 0) + 1:03d}"
+
+    async def last_price_for_client(
+            self, *, client_id: UUID, designation: str | None, product_id: UUID | None
+        ) -> dict | None:
+            """Dernier prix pratiqué à ce client pour cet article, en cherchant dans :
+            - les ventes passées (prix achat + vente)
+            - les proformas en cours (prix vente seulement)
+            Le plus récent des deux gagne."""
+
+            norm = " ".join(designation.lower().split()) if designation else None
+
+            # --- Source 1 : ventes ---
+            vente_stmt = (
+                select(
+                    SalesOrderItem.purchase_price,
+                    SalesOrderItem.sale_price,
+                    SalesOrder.sale_date.label("d"),
+                )
+                .join(SalesOrder, SalesOrder.id == SalesOrderItem.sales_order_id)
+                .where(SalesOrder.client_id == client_id)
+                .order_by(SalesOrder.sale_date.desc(), SalesOrder.created_at.desc())
+                .limit(1)
+            )
+            if product_id is not None:
+                vente_stmt = vente_stmt.where(SalesOrderItem.product_id == product_id)
+            elif norm:
+                vente_stmt = vente_stmt.where(func.lower(func.trim(SalesOrderItem.designation)) == norm)
+            else:
+                return None
+            vente = (await self.session.execute(vente_stmt)).first()
+
+            # --- Source 2 : proformas en cours (non converties) ---
+            pf_stmt = (
+                select(
+                    SalesProformaItem.sale_price,
+                    SalesProforma.proforma_date.label("d"),
+                )
+                .join(SalesProforma, SalesProforma.id == SalesProformaItem.proforma_id)
+                .where(
+                    SalesProforma.client_id == client_id,
+                    SalesProforma.status == "en_cours",
+                )
+                .order_by(SalesProforma.proforma_date.desc(), SalesProforma.created_at.desc())
+                .limit(1)
+            )
+            if product_id is not None:
+                pf_stmt = pf_stmt.where(SalesProformaItem.product_id == product_id)
+            elif norm:
+                pf_stmt = pf_stmt.where(func.lower(func.trim(SalesProformaItem.designation)) == norm)
+            pf = (await self.session.execute(pf_stmt)).first()
+
+            # --- Choisir le plus récent ---
+            if vente is None and pf is None:
+                return None
+            if pf is None or (vente is not None and vente.d >= pf.d):
+                # la vente est plus récente (ou égale) → on a les deux prix
+                return {
+                    "purchase_price": vente.purchase_price,
+                    "sale_price": vente.sale_price,
+                    "last_sale_date": vente.d,
+                    "source": "vente",
+                }
+            else:
+                # la proforma est plus récente → seulement le prix de vente
+                return {
+                    "purchase_price": None,
+                    "sale_price": pf.sale_price,
+                    "last_sale_date": pf.d,
+                    "source": "proforma",
+                }

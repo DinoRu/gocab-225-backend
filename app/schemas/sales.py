@@ -73,6 +73,7 @@ class SalesOrderItemCreate(BaseModel):
     unit: str = Field(default="pièce", max_length=20)
     purchase_price: Decimal = Field(ge=0)     # obligatoire → marge toujours calculable
     sale_price: Decimal = Field(ge=0)
+    add_to_catalog: bool = False              # Nouveau
 
 
 class SalesOrderCreate(BaseModel):
@@ -114,6 +115,9 @@ class SalesOrderRead(BaseModel):
     total_margin: Decimal
     vat_rate: Decimal          # 0.18
     vat_amount: Decimal        # TVA
+    payment_status: Literal["impayee","partiellement_payee","payee"]
+    amount_paid: Decimal
+    amount_due: Decimal
     total_ttc: Decimal         # TTC
     created_at: datetime
     
@@ -207,6 +211,7 @@ class ProformaItemCreate(BaseModel):
     quantity: int = Field(gt=0)
     unit: str = Field(default="pièce", max_length=20)  
     sale_price: Decimal = Field(ge=0)
+    add_to_catalog: bool = False
 
 
 class SalesProformaCreate(BaseModel):
@@ -257,3 +262,74 @@ class ProformaConvertItem(BaseModel):
 class ProformaConvertInput(BaseModel):
     sale_date: date
     items: list[ProformaConvertItem] = Field(min_length=1)
+
+
+# Statut de livraison (dérivé)
+DeliveryStatus = Literal["non_livree", "partiellement_livree", "livree"]
+
+# ---------- Bons de livraison ----------
+class DeliveryItemInput(BaseModel):
+    sales_order_item_id: uuid.UUID | None = None   # None = ligne libre
+    designation: str = Field(min_length=1, max_length=255)
+    quantity: int = Field(gt=0)
+    unit: str = Field(default="pièce", max_length=20)
+    sale_price: Decimal = Field(ge=0)
+
+
+class DeliveryNoteCreate(BaseModel):
+    sales_order_id: uuid.UUID
+    delivery_date: date
+    notes: str | None = None
+    items: list[DeliveryItemInput] = Field(min_length=1)
+
+
+class DeliveryItemRead(BaseModel):
+    id: uuid.UUID
+    sales_order_item_id: uuid.UUID | None
+    designation: str
+    quantity: int
+    unit: str
+    sale_price: Decimal
+    line_total: Decimal
+
+
+class DeliveryNoteRead(BaseModel):
+    id: uuid.UUID
+    delivery_number: str
+    sales_order_id: uuid.UUID
+    sale_number: str
+    client_id: uuid.UUID
+    client_name: str
+    delivery_date: date
+    notes: str | None
+    items: list[DeliveryItemRead]
+    total: Decimal
+    created_at: datetime
+
+
+# Pour le formulaire : le reste à livrer d'une vente
+class DeliverableLine(BaseModel):
+    sales_order_item_id: uuid.UUID
+    designation: str
+    unit: str
+    sale_price: Decimal
+    quantity_ordered: int
+    quantity_delivered: int
+    quantity_remaining: int
+
+
+class DeliverableSale(BaseModel):
+    sales_order_id: uuid.UUID
+    sale_number: str
+    client_id: uuid.UUID
+    client_name: str
+    lines: list[DeliverableLine]
+    
+
+# ================ Prix par client (marge, TVA, paiement) ================
+class ClientPriceHint(BaseModel):
+    purchase_price: Decimal | None
+    sale_price: Decimal
+    last_sale_date: date
+    source: str
+    

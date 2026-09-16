@@ -16,7 +16,7 @@ from app.models.inventory_audit import InventoryAuditLog
 from app.models.order_audit import OrderAuditLog
 from app.models.refresh_token import RefreshToken
 from app.models.supply_consumption import SupplyLineConsumption
-from app.models.sales import SalesClient, SalesProduct, SalesOrder, SalesOrderItem, SalesPayment, SalesPaymentAllocation, SalesProforma, SalesProformaItem
+from app.models.sales import SalesClient, SalesProduct, SalesOrder, SalesOrderItem, SalesPayment, SalesPaymentAllocation, SalesProforma, SalesProformaItem, SalesDeliveryNote, SalesDeliveryItem
 from app.models.center_request import CenterRequest, CenterRequestItem
 
 __all__ = [
@@ -48,6 +48,8 @@ __all__ = [
     "SalesPaymentAllocation",
     "SalesProforma",
     "SalesProformaItem",
+    "SalesDeliveryNote",
+    "SalesDeliveryItem",
     "CenterRequest",
     "CenterRequestItem",
 ]

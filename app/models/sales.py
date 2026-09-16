@@ -170,3 +170,50 @@ class SalesProformaItem(Base, UUIDMixin):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
     proforma: Mapped["SalesProforma"] = relationship(back_populates="items")
+
+
+class SalesDeliveryNote(Base, UUIDMixin):
+    __tablename__ = "sales_delivery_notes"
+    __table_args__ = (UniqueConstraint("delivery_number", name="uq_sales_delivery_number"),)
+
+    delivery_number: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    sales_order_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sales_orders.id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sales_clients.id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
+    delivery_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+    client: Mapped["SalesClient"] = relationship(lazy="selectin")
+    order: Mapped["SalesOrder"] = relationship(lazy="selectin")
+    items: Mapped[list["SalesDeliveryItem"]] = relationship(
+        back_populates="delivery_note", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class SalesDeliveryItem(Base, UUIDMixin):
+    __tablename__ = "sales_delivery_items"
+    __table_args__ = (
+        CheckConstraint("quantity > 0", name="ck_sales_delivery_item_qty_positive"),
+    )
+
+    delivery_note_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sales_delivery_notes.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    sales_order_item_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sales_order_items.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    designation: Mapped[str] = mapped_column(String(255), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False, default="pièce")
+    sale_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+    delivery_note: Mapped["SalesDeliveryNote"] = relationship(back_populates="items")

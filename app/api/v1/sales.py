@@ -6,22 +6,26 @@ from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.deps import SessionDep
 from app.api.auth_deps import require_role
+from app.core.exceptions import BusinessRuleError
 from app.core.pagination import PaginationDep
 from app.schemas.common import Page, to_page
 from app.schemas.sales import (
-    SalesClientCreate, SalesClientRead, SalesClientUpdate, SalesDashboardResponse,
+    ClientPriceHint, SalesClientCreate, SalesClientRead, SalesClientUpdate, SalesDashboardResponse,
     SalesProductCreate, SalesProductRead, SalesProductUpdate,
     SalesOrderCreate, SalesOrderRead, SalesOrderUpdate,
     SalesPaymentCreate, SalesPaymentRead, ClientLedgerRead,
-    SalesProformaCreate, SalesProformaRead, SalesProformaUpdate, ProformaConvertInput
+    SalesProformaCreate, SalesProformaRead, SalesProformaUpdate, ProformaConvertInput,
+    DeliveryNoteCreate, DeliveryNoteRead, DeliverableSale
 )
 from app.services.sales import (
-    SalesClientService, SalesProductService, SalesOrderService,
+    SalesClientService, SalesProductService, SalesOrderService, compute_payment_status
 )
 from app.services.sales_dashboard import SalesDashboardService
 from app.services.sales_payment import SalesPaymentService
 from app.services.sales_proforma import SalesProformaService
 from app.services.sales_proforma_doc import build_proforma_pdf
+from app.services.sales_delivery import SalesDeliveryService
+from app.services.sales_delivery_doc import build_delivery_pdf
 
 
 
@@ -129,6 +133,25 @@ async def create_sale(payload: SalesOrderCreate, session: SessionDep):
     return await SalesOrderService(session).create(payload)
 
 
+@router.post("/orders/{order_id}/settle", response_model=SalesPaymentRead, status_code=status.HTTP_201_CREATED)
+async def settle_sale(order_id: UUID, session: SessionDep):
+    """Solder une vente : crée un paiement du reste dû, imputé en priorité sur cette vente."""
+    so = await SalesOrderService(session).get_or_404(order_id)
+    pay = await compute_payment_status(session, so)
+    due = pay["amount_due"]
+    if due <= 0:
+        raise BusinessRuleError("Cette vente est déjà entièrement payée.")
+
+    payload = SalesPaymentCreate(
+        client_id=so.client_id,
+        payment_date=date.today(),
+        amount=due,
+        method="Règlement facture",
+        notes=f"Solde de la vente {so.sale_number}",
+    )
+    return await SalesPaymentService(session).create(payload, target_order_id=order_id)
+
+
 @router.patch("/orders/{order_id}", response_model=SalesOrderRead)
 async def update_sale(order_id: UUID, payload: SalesOrderUpdate, session: SessionDep):
     return await SalesOrderService(session).update(order_id, payload)
@@ -218,3 +241,63 @@ async def proforma_pdf(pf_id: UUID, session: SessionDep):
     filename = f"proforma_{pf['proforma_number']}.pdf"
     return Response(content=buffer.getvalue(), media_type=_PDF,
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+# ========= BL (Bon de livraison) ======================================
+
+@router.get("/deliveries", response_model=Page[DeliveryNoteRead])
+async def list_deliveries(
+    session: SessionDep,
+    pagination: PaginationDep,
+    client_id: Annotated[UUID | None, Query()] = None,
+    sales_order_id: Annotated[UUID | None, Query()] = None,
+):
+    svc = SalesDeliveryService(session)
+    items, total = await svc.list_deliveries(
+        client_id=client_id, sales_order_id=sales_order_id,
+        page=pagination.page, limit=pagination.limit,
+    )
+    return to_page(items, total=total, page=pagination.page, limit=pagination.limit)
+
+
+@router.get("/deliveries/deliverable/{sales_order_id}", response_model=DeliverableSale)
+async def deliverable(sales_order_id: UUID, session: SessionDep):
+    return await SalesDeliveryService(session).deliverable(sales_order_id)
+
+
+@router.get("/deliveries/{dn_id}", response_model=DeliveryNoteRead)
+async def get_delivery(dn_id: UUID, session: SessionDep):
+    return await SalesDeliveryService(session).get_detail(dn_id)
+
+
+@router.post("/deliveries", response_model=DeliveryNoteRead, status_code=status.HTTP_201_CREATED)
+async def create_delivery(payload: DeliveryNoteCreate, session: SessionDep):
+    return await SalesDeliveryService(session).create(payload)
+
+
+@router.delete("/deliveries/{dn_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_delivery(dn_id: UUID, session: SessionDep):
+    await SalesDeliveryService(session).delete(dn_id)
+
+
+@router.get("/deliveries/{dn_id}/pdf")
+async def delivery_pdf(dn_id: UUID, session: SessionDep):
+    dn = await SalesDeliveryService(session).get_detail(dn_id)
+    buffer = build_delivery_pdf(dn)
+    filename = f"BL_{dn['delivery_number']}.pdf"
+    return Response(content=buffer.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    
+    
+# =============== Prix par client (marge, TVA, paiement) =========================
+@router.get("/price-hint", response_model=ClientPriceHint | None)
+async def price_hint(
+    session: SessionDep,
+    client_id: Annotated[UUID, Query()],
+    designation: Annotated[str | None, Query(max_length=255)] = None,
+    product_id: Annotated[UUID | None, Query()] = None,
+):
+    """Dernier prix pratiqué à ce client pour cet article (ou null si jamais vendu)."""
+    return await SalesOrderService(session).last_price_for_client(
+        client_id=client_id, designation=designation, product_id=product_id,
+    )

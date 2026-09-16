@@ -9,7 +9,7 @@ from reportlab.platypus import (
 )
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from app.core.tax import vat_amount, ttc_amount
-from app.core.units import format_qty_unit
+# from app.core.units import format_qty_unit
 
 
 def _fcfa(v) -> str:
@@ -26,7 +26,9 @@ def build_proforma_pdf(pf: dict) -> BytesIO:
 
     story = []
     story.append(Paragraph("FACTURE PROFORMA", title_style))
-    # story.append(Paragraph("GOCAB 225 — Vente de pièces", small))
+    story.append(Paragraph("SEP CI", small))
+    story.append(Paragraph("02 BP 1323 Abidjan 02", small))
+    story.append(Paragraph("Tél : +225 07 00 51 51 00", small))
     story.append(Spacer(1, 8 * mm))
 
     # En-tête : n°, date, client
@@ -43,7 +45,7 @@ def build_proforma_pdf(pf: dict) -> BytesIO:
     # Lignes
     data = [["Désignation", "Qté", "Prix unitaire", "Total"]]
     for it in pf["items"]:
-        qty_label = format_qty_unit(it["quantity"], it.get("unit", ""))
+        qty_label = str(it["quantity"])
         data.append([
             it["designation"],
             qty_label,                          # ← "10 pièce", "5 litre"…

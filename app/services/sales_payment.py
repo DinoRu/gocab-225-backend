@@ -90,12 +90,11 @@ class SalesPaymentService:
         return out, total
 
     # ---------- création avec imputation automatique ----------
-    async def create(self, data) -> dict:
+    async def create(self, data, *, target_order_id: UUID | None = None) -> dict:
         client = await self.session.get(SalesClient, data.client_id)
         if client is None:
             raise NotFoundError(f"Client {data.client_id} introuvable.")
 
-        # Ventes du client, chronologiques, avec leurs lignes (pour le total).
         sales = (await self.session.scalars(
             select(SalesOrder)
             .where(SalesOrder.client_id == data.client_id)
@@ -105,7 +104,7 @@ class SalesPaymentService:
 
         allocated = await allocated_by_order(self.session, [s.id for s in sales])
 
-        # Reste dû par vente, dans l'ordre.
+        # Reste dû par vente (TTC), dans l'ordre chronologique.
         remaining_by_sale = []
         total_due = Decimal("0")
         for s in sales:
@@ -122,7 +121,12 @@ class SalesPaymentService:
                 f"Le montant ({amount}) dépasse le total dû par le client ({total_due})."
             )
 
-        # Imputation : on remplit les ventes de la plus ancienne à la plus récente.
+        # Si une vente cible est fournie, on la met EN TÊTE de la file d'imputation.
+        if target_order_id is not None:
+            remaining_by_sale.sort(key=lambda pair: pair[0].id != target_order_id)
+            # (les paires dont l'id == cible passent devant : False trie avant True)
+
+        # Imputation dans l'ordre (cible d'abord si fournie, puis plus ancien → récent).
         allocations: list[tuple[UUID, Decimal]] = []
         left = amount
         for s, rem in remaining_by_sale:

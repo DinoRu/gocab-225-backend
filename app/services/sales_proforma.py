@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.db import constraint_name
 from app.core.exceptions import BusinessRuleError, ConflictError, NotFoundError
+from app.core.helpers import ensure_catalog_product
 from app.core.pagination import paginate
 from app.models.sales import (
     SalesClient, SalesOrder, SalesOrderItem,
@@ -113,6 +114,16 @@ class SalesProformaService:
                     for i in data.items
                 ],
             )
+            # Enregistrement auto au catalogue pour les lignes libres cochées
+            for i in data.items:
+                if getattr(i, "add_to_catalog", False) and i.product_id is None:
+                    await ensure_catalog_product(
+                        session=self.session,
+                        designation=i.designation,
+                        sale_price=i.sale_price,
+                        unit=i.unit or "pièce",
+                        purchase_price=None,     # proforma → pas de prix d'achat
+                )
             self.session.add(pf)
             try:
                 await self.session.commit()
