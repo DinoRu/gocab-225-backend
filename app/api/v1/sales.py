@@ -10,7 +10,7 @@ from app.core.exceptions import BusinessRuleError
 from app.core.pagination import PaginationDep
 from app.schemas.common import Page, to_page
 from app.schemas.sales import (
-    ClientPriceHint, SalesClientCreate, SalesClientRead, SalesClientUpdate, SalesDashboardResponse,
+    ClientPriceHint, SaleLinesUpdate, SalesClientCreate, SalesClientRead, SalesClientUpdate, SalesDashboardResponse,
     SalesProductCreate, SalesProductRead, SalesProductUpdate,
     SalesOrderCreate, SalesOrderRead, SalesOrderUpdate,
     SalesPaymentCreate, SalesPaymentRead, ClientLedgerRead,
@@ -21,6 +21,7 @@ from app.services.sales import (
     SalesClientService, SalesProductService, SalesOrderService, compute_payment_status
 )
 from app.services.sales_dashboard import SalesDashboardService
+from app.services.sales_ledger_doc import build_ledger_pdf
 from app.services.sales_payment import SalesPaymentService
 from app.services.sales_proforma import SalesProformaService
 from app.services.sales_proforma_doc import build_proforma_pdf
@@ -128,6 +129,11 @@ async def get_sale(order_id: UUID, session: SessionDep):
     return await SalesOrderService(session).get_detail(order_id)
 
 
+@router.post("/orders/{order_id}/close-to-delivered", response_model=SalesOrderRead)
+async def close_sale_to_delivered(order_id: UUID, session: SessionDep):
+    return await SalesOrderService(session).close_to_delivered(order_id)
+
+
 @router.post("/orders", response_model=SalesOrderRead, status_code=status.HTTP_201_CREATED)
 async def create_sale(payload: SalesOrderCreate, session: SessionDep):
     return await SalesOrderService(session).create(payload)
@@ -155,6 +161,11 @@ async def settle_sale(order_id: UUID, session: SessionDep):
 @router.patch("/orders/{order_id}", response_model=SalesOrderRead)
 async def update_sale(order_id: UUID, payload: SalesOrderUpdate, session: SessionDep):
     return await SalesOrderService(session).update(order_id, payload)
+
+
+@router.patch("/orders/{order_id}/lines", response_model=SalesOrderRead)
+async def update_sale_lines(order_id: UUID, payload: SaleLinesUpdate, session: SessionDep):
+    return await SalesOrderService(session).update_lines(order_id, payload)
 
 
 @router.delete("/orders/{order_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -192,6 +203,17 @@ async def delete_payment(payment_id: UUID, session: SessionDep):
 @router.get("/clients/{client_id}/ledger", response_model=ClientLedgerRead)
 async def client_ledger(client_id: UUID, session: SessionDep):
     return await SalesPaymentService(session).client_ledger(client_id)
+
+
+
+@router.get("/clients/{client_id}/ledger/pdf")
+async def client_ledger_pdf(client_id: UUID, session: SessionDep):
+    ledger = await SalesPaymentService(session).client_ledger(client_id)
+    buffer = build_ledger_pdf(ledger)
+    safe_name = ledger["client_name"].replace(" ", "_")
+    filename = f"relevé_{safe_name}.pdf"
+    return Response(content=buffer.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 

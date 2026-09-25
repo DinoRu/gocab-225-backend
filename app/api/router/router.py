@@ -14,7 +14,8 @@ from app.api.v1 import (
     user,
     supply_request,
     sales,
-    center_request
+    center_request,
+    tariff,
 )
 
 api_router = APIRouter()
@@ -34,3 +35,4 @@ api_router.include_router(user.router)
 api_router.include_router(supply_request.router)
 api_router.include_router(sales.router)
 api_router.include_router(center_request.router)
+api_router.include_router(tariff.router)

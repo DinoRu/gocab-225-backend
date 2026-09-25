@@ -213,39 +213,52 @@ class SalesOrderService:
         data = serialize_sale(so)
         data["delivery_status"] = await compute_delivery_status(self.session, so)
         pay = await compute_payment_status(self.session, so)
-        data.update(pay)   # payment_status, amount_paid, amount_due
+        data.update(pay)
+        # quantité livrée par ligne (pour l'édition : verrouiller les lignes livrées)
+        delivered = await delivered_by_order_item(self.session, [it.id for it in so.items])
+        for item in data["items"]:
+            item["delivered_quantity"] = delivered.get(item["id"], 0)
         return data
 
     async def list_sales(self, *, search, client_id, start_date, end_date, page, limit):
-        stmt = self.repo.list_stmt(search=search, client_id=client_id, start_date=start_date, end_date=end_date)
+        stmt = self.repo.list_stmt(
+            search=search, client_id=client_id, start_date=start_date, end_date=end_date
+        )
         items, total = await paginate(self.session, stmt, page=page, limit=limit)
 
+        # Une seule requête pour le livré de toutes les lignes de la page
         all_item_ids = [it.id for so in items for it in so.items]
         delivered = await delivered_by_order_item(self.session, all_item_ids)
+        # Une seule requête pour l'imputé (paiements) de toutes les ventes de la page
         allocated = await allocated_by_order(self.session, [so.id for so in items])
 
         result = []
         for so in items:
             data = serialize_sale(so)
-            # livraison
+
+            # --- statut de livraison ---
             total_ordered = sum(it.quantity for it in so.items)
             total_delivered = sum(delivered.get(it.id, 0) for it in so.items)
-            data["delivery_status"] = (
-                "non_livrée" if total_delivered == 0
-                else "livrée" if total_delivered >= total_ordered
-                else "partiellement_livrée"
-            )
-            # paiement
+            if total_delivered == 0:
+                data["delivery_status"] = "non_livree"
+            elif total_delivered >= total_ordered:
+                data["delivery_status"] = "livree"
+            else:
+                data["delivery_status"] = "partiellement_livree"
+
+            # --- statut de paiement ---
             paid = allocated.get(so.id, Decimal("0"))
-            total_ttc = ttc_amount(data["total_sale"])   # total_sale = HT dans serialize_sale
+            total_ttc = ttc_amount(data["total_sale"])
             remaining = total_ttc - paid
-            data["payment_status"] = (
-                "impayee" if paid <= 0
-                else "payee" if remaining <= 0
-                else "partiellement_payee"
-            )
+            if paid <= 0:
+                data["payment_status"] = "impayee"
+            elif remaining <= 0:
+                data["payment_status"] = "payee"
+            else:
+                data["payment_status"] = "partiellement_payee"
             data["amount_paid"] = paid
             data["amount_due"] = remaining if remaining > 0 else Decimal("0")
+
             result.append(data)
         return result, total
 
@@ -326,12 +339,86 @@ class SalesOrderService:
         await self.session.commit()
         return await self.get_detail(order_id)
 
+    async def update_lines(self, order_id: UUID, data) -> dict:
+        so = await self.repo.get_detail(order_id)
+        if so is None:
+            raise NotFoundError(f"Vente {order_id} introuvable.")
+
+        delivered = await delivered_by_order_item(self.session, [it.id for it in so.items])
+        existing = {it.id: it for it in so.items}
+
+        # ids présents dans la requête (lignes conservées/modifiées)
+        kept_ids = {i.id for i in data.items if i.id is not None}
+        returned = set(data.returned_item_ids)
+
+        # --- 1. Vérifs sur les lignes RETIRÉES (présentes en base, absentes de la requête) ---
+        for it in so.items:
+            if it.id in kept_ids:
+                continue  # conservée, traitée plus bas
+            d = delivered.get(it.id, 0)
+            if d > 0 and it.id not in returned:
+                # ligne livrée retirée sans confirmation de retour → bloqué
+                raise BusinessRuleError(
+                    f"« {it.designation} » a été livrée ({d}). Pour la retirer, confirmez un retour."
+                )
+
+        # --- 2. Vérifs sur les lignes MODIFIÉES ---
+        for i in data.items:
+            if i.id is None:
+                continue  # nouvelle ligne, pas de contrainte de livré
+            it = existing.get(i.id)
+            if it is None:
+                raise BusinessRuleError("Une ligne référencée n'appartient pas à cette vente.")
+            d = delivered.get(i.id, 0)
+            # on ne peut pas réduire une ligne sous son livré (sauf retour, non géré ici pour la modif)
+            if i.quantity < d:
+                raise BusinessRuleError(
+                    f"« {i.designation} » : quantité {i.quantity} < déjà livré ({d}). "
+                    f"Utilisez un retour pour réduire en dessous du livré."
+                )
+
+        # --- 3. Appliquer : supprimer les retirées ---
+        for it in list(so.items):
+            if it.id not in kept_ids:
+                so.items.remove(it)   # SET NULL sur les lignes de BL → trace conservée
+
+        # --- 4. Modifier les conservées + ajouter les nouvelles ---
+        for i in data.items:
+            if i.id is not None:
+                it = existing[i.id]
+                it.product_id = i.product_id
+                it.designation = i.designation.strip()
+                it.quantity = i.quantity
+                it.unit = i.unit or "pièce"
+                it.purchase_price = i.purchase_price
+                it.sale_price = i.sale_price
+            else:
+                so.items.append(SalesOrderItem(
+                    product_id=i.product_id,
+                    designation=i.designation.strip(),
+                    quantity=i.quantity,
+                    unit=i.unit or "pièce",
+                    purchase_price=i.purchase_price,
+                    sale_price=i.sale_price,
+                ))
+
+        await self.session.commit()
+        return await self.get_detail(order_id)
+
     async def delete(self, order_id: UUID) -> None:
         so = await self.repo.get_detail(order_id)
         if so is None:
             raise NotFoundError(f"Vente {order_id} introuvable.")
-        await self.session.delete(so)
-        await self.session.commit()
+        try:
+            await self.session.delete(so)
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            # RESTRICT sur sales_delivery_notes → vente déjà livrée
+            raise BusinessRuleError(
+                "Cette vente a des bons de livraison et ne peut pas être supprimée. "
+                "Utilisez « Clôturer au livré » pour l'ajuster à ce qui a été réellement livré."
+            ) from exc
 
     async def _next_number(self, year: int) -> str:
         prefix = f"VNT-{year}-"
@@ -412,3 +499,36 @@ class SalesOrderService:
                     "last_sale_date": pf.d,
                     "source": "proforma",
                 }
+
+    async def close_to_delivered(self, order_id: UUID) -> dict:
+        """Ramène chaque ligne de la vente à sa quantité réellement livrée.
+        Lignes non livrées → retirées. La vente reflète alors le réel reçu par le client."""
+        so = await self.repo.get_detail(order_id)
+        if so is None:
+            raise NotFoundError(f"Vente {order_id} introuvable.")
+
+        delivered = await delivered_by_order_item(self.session, [it.id for it in so.items])
+
+        # Rien livré du tout → clôturer viderait la vente : on refuse.
+        total_delivered = sum(delivered.get(it.id, 0) for it in so.items)
+        if total_delivered == 0:
+            raise BusinessRuleError(
+                "Aucune ligne n'a été livrée : rien à clôturer. Supprimez plutôt la vente si besoin."
+            )
+
+        # Déjà tout livré → rien à ajuster.
+        already_full = all(delivered.get(it.id, 0) >= it.quantity for it in so.items)
+        if already_full:
+            raise BusinessRuleError("Cette vente est déjà entièrement livrée : aucun ajustement nécessaire.")
+
+        # Ajuster : chaque ligne à son livré ; retirer les lignes à 0.
+        for it in list(so.items):
+            d = delivered.get(it.id, 0)
+            if d <= 0:
+                so.items.remove(it)          # jamais livrée → retirée
+            elif d < it.quantity:
+                it.quantity = d              # partiellement livrée → ramenée au livré
+            # d >= it.quantity → inchangée
+
+        await self.session.commit()
+        return await self.get_detail(order_id)

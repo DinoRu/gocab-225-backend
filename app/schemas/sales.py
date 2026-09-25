@@ -100,6 +100,7 @@ class SalesOrderItemRead(BaseModel):
     sale_price: Decimal
     line_total: Decimal        # sale_price * quantity
     line_margin: Decimal       # (sale_price - purchase_price) * quantity
+    delivered_quantity: int = 0        # 
 
 
 class SalesOrderRead(BaseModel):
@@ -115,7 +116,8 @@ class SalesOrderRead(BaseModel):
     total_margin: Decimal
     vat_rate: Decimal          # 0.18
     vat_amount: Decimal        # TVA
-    payment_status: Literal["impayee","partiellement_payee","payee"]
+    delivery_status: Literal["non_livree", "partiellement_livree", "livree"]
+    payment_status: Literal["impayee", "partiellement_payee", "payee"]
     amount_paid: Decimal
     amount_due: Decimal
     total_ttc: Decimal         # TTC
@@ -148,6 +150,22 @@ class SalesPaymentRead(BaseModel):
     notes: str | None
     allocations: list[PaymentAllocationRead]
     created_at: datetime
+    
+
+class SaleLineEdit(BaseModel):
+    id: uuid.UUID | None = None          # présent = ligne existante ; absent = nouvelle
+    product_id: uuid.UUID | None = None
+    designation: str = Field(min_length=1, max_length=255)
+    quantity: int = Field(gt=0)
+    unit: str = Field(default="pièce", max_length=20)
+    purchase_price: Decimal = Field(ge=0)
+    sale_price: Decimal = Field(ge=0)
+
+
+class SaleLinesUpdate(BaseModel):
+    items: list[SaleLineEdit] = Field(min_length=1)
+    # ids de lignes livrées qu'on retire volontairement (retours confirmés)
+    returned_item_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 # ---------- Grand livre ----------

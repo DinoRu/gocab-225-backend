@@ -18,6 +18,7 @@ from app.models.refresh_token import RefreshToken
 from app.models.supply_consumption import SupplyLineConsumption
 from app.models.sales import SalesClient, SalesProduct, SalesOrder, SalesOrderItem, SalesPayment, SalesPaymentAllocation, SalesProforma, SalesProformaItem, SalesDeliveryNote, SalesDeliveryItem
 from app.models.center_request import CenterRequest, CenterRequestItem
+from app.models.tariff import TariffSupplier, TariffArticle, TariffPrice
 
 __all__ = [
     "Base",
@@ -52,5 +53,8 @@ __all__ = [
     "SalesDeliveryItem",
     "CenterRequest",
     "CenterRequestItem",
+    "TariffSupplier",
+    "TariffArticle",
+    "TariffPrice"
 ]
 
