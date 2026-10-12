@@ -45,6 +45,7 @@ def _serialize(pf: SalesProforma, sale_number: str | None) -> dict:
         "notes": pf.notes,
         "converted_sale_id": pf.converted_sale_id,
         "converted_sale_number": sale_number,
+        "vat_applicable": pf.vat_applicable,      #
         "items": items,
         "total": total,
         "created_at": pf.created_at,
@@ -104,6 +105,7 @@ class SalesProformaService:
                 proforma_date=data.proforma_date,
                 status="en_cours",
                 notes=data.notes,
+                vat_applicable=data.vat_applicable, 
                 items=[
                     SalesProformaItem(
                         product_id=i.product_id,
@@ -191,6 +193,7 @@ class SalesProformaService:
                 client_id=pf.client_id,
                 sale_date=data.sale_date,
                 notes=f"Issue de la proforma {pf.proforma_number}",
+                vat_applicable=pf.vat_applicable,
                 items=[
                     SalesOrderItem(
                         product_id=it.product_id,

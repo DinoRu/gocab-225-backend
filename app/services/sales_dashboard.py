@@ -40,7 +40,17 @@ class SalesDashboardService:
         ca, depenses = line_totals.one()
         ca = Decimal(ca)
         # après avoir calculé ca (total HT de la période) :
-        tva_collectee = vat_amount(ca)
+                # TVA collectée : seulement sur les ventes taxées de la période
+        taxed_ht = await self.session.scalar(
+            select(func.coalesce(func.sum(SalesOrderItem.sale_price * SalesOrderItem.quantity), 0))
+            .select_from(SalesOrderItem)
+            .join(SalesOrder, SalesOrder.id == SalesOrderItem.sales_order_id)
+            .where(
+                SalesOrder.sale_date >= start, SalesOrder.sale_date <= end,
+                SalesOrder.vat_applicable.is_(True),
+            )
+        )
+        tva_collectee = vat_amount(Decimal(taxed_ht))
         depenses = Decimal(depenses)
         benefice = ca - depenses
 

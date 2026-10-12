@@ -13,7 +13,7 @@ class ModelRef(BaseModel):
 
 
 class PartCreate(BaseModel):
-    reference: str = Field(min_length=1, max_length=120)
+    reference: str | None = Field(default=None, min_length=1, max_length=120)
     designation: str = Field(min_length=1, max_length=255)
     vehicle_model_ids: list[uuid.UUID] = Field(default_factory=list)
     category: str | None = Field(default=None, max_length=120)
@@ -51,3 +51,24 @@ class PartOrderHistoryRow(BaseModel):
     quantity: int
     unit_price: Decimal | None
     line_total: Decimal | None
+    
+
+class PartBulkItemInput(BaseModel):
+    reference: str | None = Field(default=None, max_length=120)
+    designation: str = Field(min_length=1, max_length=255)
+    vehicle_model_ids: list[uuid.UUID] = Field(default_factory=list)
+    category: str | None = Field(default=None, max_length=120)
+
+
+class PartBulkCreateInput(BaseModel):
+    atomic: bool = True
+    items: list[PartBulkItemInput] = Field(min_length=1)
+
+
+class PartBulkRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    reference: str
+    designation: str
+    category: str | None
+    is_universal: bool

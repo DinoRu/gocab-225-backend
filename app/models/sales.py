@@ -3,7 +3,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
-    String, Text, Date, Integer, Numeric, ForeignKey,
+    Boolean, DateTime, String, Text, Date, Integer, Numeric, ForeignKey,
     UniqueConstraint, CheckConstraint, func
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
@@ -44,6 +44,7 @@ class SalesOrder(Base, UUIDMixin, TimestampMixin):
         nullable=False, index=True,
     )
     sale_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    vat_applicable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     client: Mapped["SalesClient"] = relationship(lazy="selectin")
@@ -135,6 +136,7 @@ class SalesProforma(Base, UUIDMixin, TimestampMixin):
         nullable=False, index=True,
     )
     proforma_date: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    vat_applicable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="en_cours", nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     converted_sale_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -217,3 +219,51 @@ class SalesDeliveryItem(Base, UUIDMixin):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
 
     delivery_note: Mapped["SalesDeliveryNote"] = relationship(back_populates="items")
+    
+    
+class SalesInvoice(Base, UUIDMixin):
+    __tablename__ = "sales_invoices"
+    __table_args__ = (
+        UniqueConstraint("invoice_number", name="uq_sales_invoices_number"),
+        UniqueConstraint("sales_order_id", name="uq_sales_invoices_order"),
+    )
+
+    invoice_number: Mapped[str] = mapped_column(String(30), nullable=False, index=True)
+    sales_order_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sales_orders.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    client_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sales_clients.id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
+    client_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    invoice_date: Mapped[date] = mapped_column(Date, nullable=False)
+    vat_applicable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    total_ht: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    vat_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    total_ttc: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sale_snapshot_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+    items: Mapped[list["SalesInvoiceItem"]] = relationship(
+        back_populates="invoice", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class SalesInvoiceItem(Base, UUIDMixin):
+    __tablename__ = "sales_invoice_items"
+
+    invoice_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("sales_invoices.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    designation: Mapped[str] = mapped_column(String(255), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit: Mapped[str] = mapped_column(String(20), nullable=False)
+    sale_price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    line_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now(), nullable=False)
+
+    invoice: Mapped["SalesInvoice"] = relationship(back_populates="items")

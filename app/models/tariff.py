@@ -12,6 +12,28 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database.base import Base, UUIDMixin, TimestampMixin
 
 
+class TariffBrand(Base, UUIDMixin, TimestampMixin):
+    __tablename__ = "tariff_brands"
+    __table_args__ = (UniqueConstraint("name", name="uq_tariff_brands_name"),)
+
+    name: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
+    models: Mapped[list["TariffModel"]] = relationship(
+        back_populates="brand", cascade="all, delete-orphan"
+    )
+
+
+class TariffModel(Base, UUIDMixin, TimestampMixin):
+    __tablename__ = "tariff_models"
+    __table_args__ = (UniqueConstraint("brand_id", "name", name="uq_tariff_models_brand_name"),)
+
+    brand_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tariff_brands.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    brand: Mapped["TariffBrand"] = relationship(back_populates="models", lazy="selectin")
+
+
 
 class TariffSupplier(Base, UUIDMixin, TimestampMixin):
     __tablename__ = "tariff_suppliers"
@@ -31,7 +53,12 @@ class TariffArticle(Base, UUIDMixin, TimestampMixin):
 
     reference: Mapped[str] = mapped_column(String(100), nullable=False)
     designation: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    model_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("tariff_models.id", ondelete="RESTRICT"),
+        nullable=False, index=True,
+    )
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped["TariffModel"] = relationship(lazy="selectin")
 
 
 class TariffPrice(Base, UUIDMixin):

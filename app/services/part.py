@@ -1,7 +1,7 @@
 from datetime import date
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, func, cast, Integer
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,17 +58,35 @@ class PartService:
 
     async def create(self, data: PartCreate) -> dict:
         models = await self._resolve_models(data.vehicle_model_ids)
-        part = Part(
-            reference=data.reference.strip(),
-            designation=data.designation.strip(),
-            category=(data.category.strip() or None) if data.category else None,
-        )
-        part.vehicle_models = models
-        self.session.add(part)
-        await self._commit(reference=part.reference)
-        await self.session.refresh(part)
-        part = await self.repo.get_with_relations(part.id)
-        return serialize_part(part)
+        ref = (data.reference or "").strip()
+
+        for _ in range(5):
+            if not ref:
+                ref = await self.next_reference()
+            part = Part(
+                reference=ref,
+                designation=data.designation.strip(),
+                category=(data.category.strip() or None) if data.category else None,
+            )
+            part.vehicle_models = models
+            self.session.add(part)
+            try:
+                await self.session.commit()
+            except IntegrityError as exc:
+                await self.session.rollback()
+                if constraint_name(exc) in {"uq_parts_reference", "ix_parts_reference"}:
+                    # collision : si la réf venait de l'auto-génération, on regénère ;
+                    # si elle était saisie manuellement, c'est une vraie erreur.
+                    if not (data.reference or "").strip():
+                        ref = ""   # vide → regénère au tour suivant
+                        continue
+                    raise ConflictError(f"La référence « {ref} » existe déjà.") from exc
+                raise
+            await self.session.refresh(part)
+            part = await self.repo.get_with_relations(part.id)
+            return serialize_part(part)
+
+        raise ConflictError("Impossible de générer une référence unique.")
 
     async def update(self, part_id: UUID, data: PartUpdate) -> dict:
         part = await self.get_or_404(part_id)
@@ -154,3 +172,157 @@ class PartService:
             if constraint_name(exc) in {"uq_parts_reference", "ix_parts_reference"}:
                 raise ConflictError(f"La référence « {reference} » existe déjà.") from exc
             raise
+        
+    async def next_reference(self) -> str:
+        """Prochaine référence auto : PCE-0001, PCE-0002… (ignore les réf d'un autre format)."""
+        prefix = "PCE-"
+        seq = cast(func.split_part(Part.reference, "-", 2), Integer)
+        last = await self.session.scalar(
+            select(func.coalesce(func.max(seq), 0)).where(
+                Part.reference.op("~")(r'^PCE-\d+$')
+            )
+        )
+        return f"{prefix}{(last or 0) + 1:04d}"
+    
+    def _classify_error(self, exc: Exception) -> tuple[str, str]:
+        """Traduit une exception en (type, message) pour le rapport bulk."""
+        from app.core.exceptions import ConflictError, NotFoundError, BusinessRuleError
+        if isinstance(exc, ConflictError):
+            return "conflict", str(exc)
+        if isinstance(exc, NotFoundError):
+            return "not_found", str(exc)
+        if isinstance(exc, BusinessRuleError):
+            return "business_rule", str(exc)
+        return "error", str(exc)
+
+    async def _bulk_references(self, count: int, manual_refs: set[str]) -> list[str]:
+        """Génère `count` références PCE-nnnn en série, en évitant les réf manuelles du lot."""
+        seq = cast(func.split_part(Part.reference, "-", 2), Integer)
+        last = await self.session.scalar(
+            select(func.coalesce(func.max(seq), 0)).where(
+                Part.reference.op("~")(r'^PCE-\d+$')
+            )
+        )
+        n = (last or 0) + 1
+        manual_lower = {r.lower() for r in manual_refs}
+        refs = []
+        while len(refs) < count:
+            candidate = f"PCE-{n:04d}"
+            n += 1
+            if candidate.lower() in manual_lower:
+                continue
+            refs.append(candidate)
+        return refs
+
+    async def bulk_create(self, atomic: bool, items: list) -> dict:
+        # Références manuelles saisies dans le lot (pour éviter collision avec l'auto)
+        manual_refs = {
+            (it.reference or "").strip()
+            for it in items
+            if (it.reference or "").strip()
+        }
+        # Nombre d'items sans référence → à auto-générer
+        auto_count = sum(1 for it in items if not (it.reference or "").strip())
+        auto_refs = await self._bulk_references(auto_count, manual_refs) if auto_count else []
+        auto_iter = iter(auto_refs)
+
+        # Attribution des références (manuelle ou auto) à chaque item, dans l'ordre
+        resolved_refs: list[str] = []
+        for it in items:
+            ref = (it.reference or "").strip()
+            resolved_refs.append(ref if ref else next(auto_iter))
+
+        succeeded = []
+        failed = []
+
+        if atomic:
+            # Tout dans une transaction : au premier échec, rollback total.
+            try:
+                for idx, (it, ref) in enumerate(zip(items, resolved_refs)):
+                    models = await self._resolve_models(it.vehicle_model_ids)
+                    part = Part(
+                        reference=ref,
+                        designation=it.designation.strip(),
+                        category=(it.category.strip() or None) if it.category else None,
+                    )
+                    part.vehicle_models = models
+                    self.session.add(part)
+                    await self.session.flush()   # détecte les conflits sans commit
+                await self.session.commit()
+                # recharger pour la sérialisation
+                for it, ref in zip(items, resolved_refs):
+                    pass  # les parts sont déjà en session
+                # on récupère les parts créés (ordre préservé)
+                created = await self._fetch_by_refs(resolved_refs)
+                succeeded = [self._serialize_bulk(p) for p in created]
+                return self._envelope(len(items), succeeded, failed, atomic=True, committed=True)
+            except IntegrityError as exc:
+                await self.session.rollback()
+                etype, emsg = ("conflict", "Référence en doublon.") \
+                    if constraint_name(exc) in {"uq_parts_reference", "ix_parts_reference"} \
+                    else ("error", "Erreur d'intégrité.")
+                # en atomique, tout échoue : on reporte l'erreur globale sur la 1re ligne
+                failed = [{"index": 0, "input": items[0], "error": {"type": etype, "message": emsg}}]
+                return self._envelope(len(items), [], failed, atomic=True, committed=False)
+            except Exception as exc:
+                await self.session.rollback()
+                etype, emsg = self._classify_error(exc)
+                failed = [{"index": 0, "input": items[0], "error": {"type": etype, "message": emsg}}]
+                return self._envelope(len(items), [], failed, atomic=True, committed=False)
+
+        # --- Mode partiel : chaque pièce indépendante ---
+        for idx, (it, ref) in enumerate(zip(items, resolved_refs)):
+            try:
+                models = await self._resolve_models(it.vehicle_model_ids)
+                part = Part(
+                    reference=ref,
+                    designation=it.designation.strip(),
+                    category=(it.category.strip() or None) if it.category else None,
+                )
+                part.vehicle_models = models
+                self.session.add(part)
+                await self.session.commit()
+                await self.session.refresh(part)
+                part = await self.repo.get_with_relations(part.id)
+                succeeded.append(self._serialize_bulk(part))
+            except IntegrityError as exc:
+                await self.session.rollback()
+                etype, emsg = ("conflict", f"La référence « {ref} » existe déjà.") \
+                    if constraint_name(exc) in {"uq_parts_reference", "ix_parts_reference"} \
+                    else ("error", "Erreur d'intégrité.")
+                failed.append({"index": idx, "input": it, "error": {"type": etype, "message": emsg}})
+            except Exception as exc:
+                await self.session.rollback()
+                etype, emsg = self._classify_error(exc)
+                failed.append({"index": idx, "input": it, "error": {"type": etype, "message": emsg}})
+
+        return self._envelope(len(items), succeeded, failed, atomic=False, committed=len(succeeded) > 0)
+
+    def _serialize_bulk(self, part: Part) -> dict:
+        return {
+            "id": part.id,
+            "reference": part.reference,
+            "designation": part.designation,
+            "category": part.category,
+            "is_universal": len(part.vehicle_models) == 0,
+        }
+
+    async def _fetch_by_refs(self, refs: list[str]) -> list[Part]:
+        rows = await self.session.scalars(
+            select(Part).where(Part.reference.in_(refs))
+        )
+        by_ref = {p.reference: p for p in rows}
+        return [by_ref[r] for r in refs if r in by_ref]
+
+    def _envelope(self, total, succeeded, failed, *, atomic, committed) -> dict:
+        return {
+            "summary": {
+                "total": total,
+                "succeeded": len(succeeded),
+                "failed": len(failed),
+                "atomic": atomic,
+                "committed": committed,
+            },
+            "succeeded": succeeded,
+            "failed": failed,
+        }

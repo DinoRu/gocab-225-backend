@@ -2,14 +2,15 @@ from datetime import date
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.db import constraint_name
 from app.core.exceptions import BusinessRuleError, ConflictError, NotFoundError
 from app.core.pagination import paginate
-from app.models.tariff import TariffSupplier, TariffArticle, TariffPrice
+from app.models.tariff import TariffSupplier, TariffArticle, TariffPrice, TariffBrand, TariffModel
 
 
 # ======================= FOURNISSEURS =======================
@@ -67,6 +68,18 @@ class TariffSupplierService:
 class TariffArticleService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+        
+    async def next_reference(self) -> str:
+        """Prochaine référence séquentielle libre : ART-0001, ART-0002…"""
+        prefix = "ART-"
+        # numéro après 'ART-' → entier, on prend le max parmi les réf au format ART-nnnn
+        seq = cast(func.substring(TariffArticle.reference, len(prefix) + 1), Integer)
+        last = await self.session.scalar(
+            select(func.coalesce(func.max(seq), 0)).where(
+                TariffArticle.reference.op("~")(r'^ART-\d+$')
+            )
+        )
+        return f"{prefix}{(last or 0) + 1:04d}"
 
     async def get_or_404(self, article_id: UUID) -> TariffArticle:
         a = await self.session.get(TariffArticle, article_id)
@@ -89,7 +102,9 @@ class TariffArticleService:
         return last
 
     async def list_articles(self, *, search, page, limit):
-        stmt = select(TariffArticle)
+        stmt = select(TariffArticle).options(
+            selectinload(TariffArticle.model).selectinload(TariffModel.brand)
+        )
         if search:
             s = f"%{search.strip()}%"
             stmt = stmt.where(
@@ -107,19 +122,35 @@ class TariffArticleService:
                 "id": a.id,
                 "reference": a.reference,
                 "designation": a.designation,
+                "model_id": a.model_id,
+                "brand_name": a.model.brand.name,
+                "model_name": a.model.name,
                 "notes": a.notes,
                 "supplier_count": len(last),
                 "best_price": min(prices) if prices else None,
                 "created_at": a.created_at,
             })
         return out, total
+        return out, total
 
     async def create(self, data):
-        a = TariffArticle(**data.model_dump())
-        self.session.add(a)
-        await self.session.commit()
-        await self.session.refresh(a)
-        return a
+        payload = data.model_dump()
+        for _ in range(5):
+            if not payload.get("reference"):
+                payload["reference"] = await self.next_reference()
+            a = TariffArticle(**payload)
+            self.session.add(a)
+            try:
+                await self.session.commit()
+            except IntegrityError as exc:
+                await self.session.rollback()
+                if constraint_name(exc) == "uq_tariff_articles_reference":
+                    payload["reference"] = None   # regénère au tour suivant
+                    continue
+                raise
+            await self.session.refresh(a)
+            return a
+        raise ConflictError("Impossible de générer une référence unique.")
 
     async def update(self, article_id: UUID, data):
         a = await self.get_or_404(article_id)
@@ -236,3 +267,107 @@ class TariffPriceService:
             "supplier_name": s.name,
             "articles": articles,
         }
+
+
+class TariffBrandService:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_brands(self):
+        rows = (await self.session.scalars(select(TariffBrand).order_by(TariffBrand.name))).all()
+        return rows
+
+    async def create(self, data):
+        b = TariffBrand(name=data.name.strip())
+        self.session.add(b)
+        try:
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            if constraint_name(exc) == "uq_tariff_brands_name":
+                raise ConflictError("Cette marque existe déjà.") from exc
+            raise
+        await self.session.refresh(b)
+        return b
+
+    async def delete(self, brand_id: UUID) -> None:
+        b = await self.session.get(TariffBrand, brand_id)
+        if b is None:
+            raise NotFoundError("Marque introuvable.")
+        await self.session.delete(b)   # cascade → ses modèles (RESTRICT bloquera si articles liés)
+        await self.session.commit()
+
+
+class TariffModelService:
+    def __init__(self, session: AsyncSession) -> None:
+        self.session = session
+
+    async def list_models(self, *, brand_id=None):
+        stmt = select(TariffModel).order_by(TariffModel.name)
+        if brand_id:
+            stmt = stmt.where(TariffModel.brand_id == brand_id)
+        rows = (await self.session.scalars(stmt)).all()
+        return [
+            {"id": m.id, "brand_id": m.brand_id, "brand_name": m.brand.name, "name": m.name}
+            for m in rows
+        ]
+
+    async def create(self, data):
+        if await self.session.get(TariffBrand, data.brand_id) is None:
+            raise NotFoundError("Marque introuvable.")
+        m = TariffModel(brand_id=data.brand_id, name=data.name.strip())
+        self.session.add(m)
+        try:
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            if constraint_name(exc) == "uq_tariff_models_brand_name":
+                raise ConflictError("Ce modèle existe déjà pour cette marque.") from exc
+            raise
+        await self.session.refresh(m)
+        return {"id": m.id, "brand_id": m.brand_id, "brand_name": m.brand.name, "name": m.name}
+
+    async def create_bulk(self, brand_id: UUID, names: list[str]) -> list[dict]:
+        brand = await self.session.get(TariffBrand, brand_id)
+        if brand is None:
+            raise NotFoundError("Marque introuvable.")
+
+        # modèles déjà existants pour cette marque (pour ignorer les doublons)
+        existing = {
+            n.lower() for n in (await self.session.scalars(
+                select(TariffModel.name).where(TariffModel.brand_id == brand_id)
+            )).all()
+        }
+
+        created = []
+        seen_in_batch: set[str] = set()
+        for raw in names:
+            name = raw.strip()
+            key = name.lower()
+            if not name or key in existing or key in seen_in_batch:
+                continue   # vide, déjà en base, ou en double dans le lot → ignoré
+            seen_in_batch.add(key)
+            m = TariffModel(brand_id=brand_id, name=name)
+            self.session.add(m)
+            created.append(m)
+
+        if created:
+            await self.session.commit()
+            for m in created:
+                await self.session.refresh(m)
+
+        return [
+            {"id": m.id, "brand_id": m.brand_id, "brand_name": brand.name, "name": m.name}
+            for m in created
+        ]
+
+    async def delete(self, model_id: UUID) -> None:
+        m = await self.session.get(TariffModel, model_id)
+        if m is None:
+            raise NotFoundError("Modèle introuvable.")
+        try:
+            await self.session.delete(m)
+            await self.session.commit()
+        except IntegrityError as exc:
+            await self.session.rollback()
+            raise BusinessRuleError("Ce modèle est utilisé par des articles et ne peut pas être supprimé.") from exc

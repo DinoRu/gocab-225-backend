@@ -147,7 +147,7 @@ def serialize_sale(so: SalesOrder) -> dict:
         })
     items.sort(key=lambda x: x["designation"])
 
-    tva = vat_amount(total_sale)
+    tva = vat_amount(total_sale) if so.vat_applicable else Decimal("0")
     ttc = total_sale + tva
 
     return {
@@ -161,9 +161,10 @@ def serialize_sale(so: SalesOrder) -> dict:
         "total_sale": total_sale,          # HT
         "total_purchase": total_purchase,
         "total_margin": total_sale - total_purchase,   # marge sur HT — inchangée
-        "vat_rate": VAT_RATE,              # 0.18
+        "vat_rate": VAT_RATE if so.vat_applicable else Decimal("0"),            # 0.18
         "vat_amount": tva,                 # TVA collectée
         "total_ttc": ttc,                  # ce que le client doit
+        "vat_applicable": so.vat_applicable, 
         "created_at": so.created_at,
     }
 
@@ -214,10 +215,18 @@ class SalesOrderService:
         data["delivery_status"] = await compute_delivery_status(self.session, so)
         pay = await compute_payment_status(self.session, so)
         data.update(pay)
-        # quantité livrée par ligne (pour l'édition : verrouiller les lignes livrées)
         delivered = await delivered_by_order_item(self.session, [it.id for it in so.items])
         for item in data["items"]:
             item["delivered_quantity"] = delivered.get(item["id"], 0)
+        # facture
+        from app.models.sales import SalesInvoice
+        row = await self.session.execute(
+            select(SalesInvoice.id, SalesInvoice.invoice_number)
+            .where(SalesInvoice.sales_order_id == order_id)
+        )
+        inv = row.first()
+        data["invoice_id"] = inv[0] if inv else None
+        data["invoice_number"] = inv[1] if inv else None
         return data
 
     async def list_sales(self, *, search, client_id, start_date, end_date, page, limit):
@@ -226,39 +235,47 @@ class SalesOrderService:
         )
         items, total = await paginate(self.session, stmt, page=page, limit=limit)
 
-        # Une seule requête pour le livré de toutes les lignes de la page
         all_item_ids = [it.id for so in items for it in so.items]
         delivered = await delivered_by_order_item(self.session, all_item_ids)
-        # Une seule requête pour l'imputé (paiements) de toutes les ventes de la page
         allocated = await allocated_by_order(self.session, [so.id for so in items])
+
+        # --- factures des ventes de la page (une requête) ---
+        from app.models.sales import SalesInvoice
+        order_ids = [so.id for so in items]
+        invoices = {}
+        if order_ids:
+            rows = await self.session.execute(
+                select(SalesInvoice.sales_order_id, SalesInvoice.id, SalesInvoice.invoice_number)
+                .where(SalesInvoice.sales_order_id.in_(order_ids))
+            )
+            invoices = {oid: (iid, inum) for oid, iid, inum in rows.all()}
 
         result = []
         for so in items:
             data = serialize_sale(so)
-
-            # --- statut de livraison ---
+            # livraison
             total_ordered = sum(it.quantity for it in so.items)
             total_delivered = sum(delivered.get(it.id, 0) for it in so.items)
-            if total_delivered == 0:
-                data["delivery_status"] = "non_livree"
-            elif total_delivered >= total_ordered:
-                data["delivery_status"] = "livree"
-            else:
-                data["delivery_status"] = "partiellement_livree"
-
-            # --- statut de paiement ---
+            data["delivery_status"] = (
+                "non_livree" if total_delivered == 0
+                else "livree" if total_delivered >= total_ordered
+                else "partiellement_livree"
+            )
+            # paiement
             paid = allocated.get(so.id, Decimal("0"))
-            total_ttc = ttc_amount(data["total_sale"])
+            total_ttc = ttc_amount(data["total_sale"]) if so.vat_applicable else data["total_sale"]
             remaining = total_ttc - paid
-            if paid <= 0:
-                data["payment_status"] = "impayee"
-            elif remaining <= 0:
-                data["payment_status"] = "payee"
-            else:
-                data["payment_status"] = "partiellement_payee"
+            data["payment_status"] = (
+                "impayee" if paid <= 0
+                else "payee" if remaining <= 0
+                else "partiellement_payee"
+            )
             data["amount_paid"] = paid
             data["amount_due"] = remaining if remaining > 0 else Decimal("0")
-
+            # facture
+            inv = invoices.get(so.id)
+            data["invoice_id"] = inv[0] if inv else None
+            data["invoice_number"] = inv[1] if inv else None
             result.append(data)
         return result, total
 
@@ -276,6 +293,7 @@ class SalesOrderService:
                 client_id=data.client_id,
                 sale_date=data.sale_date,
                 notes=data.notes,
+                vat_applicable=data.vat_applicable, 
                 items=[
                     SalesOrderItem(
                         product_id=i.product_id,

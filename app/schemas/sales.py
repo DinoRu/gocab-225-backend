@@ -80,6 +80,7 @@ class SalesOrderCreate(BaseModel):
     client_id: uuid.UUID
     sale_date: date
     notes: str | None = None
+    vat_applicable: bool = True  
     items: list[SalesOrderItemCreate] = Field(min_length=1)
 
 
@@ -87,6 +88,7 @@ class SalesOrderUpdate(BaseModel):
     client_id: uuid.UUID | None = None
     sale_date: date | None = None
     notes: str | None = None
+    vat_applicable: bool | None = None
     items: list[SalesOrderItemCreate] | None = None
 
 
@@ -116,6 +118,9 @@ class SalesOrderRead(BaseModel):
     total_margin: Decimal
     vat_rate: Decimal          # 0.18
     vat_amount: Decimal        # TVA
+    vat_applicable: bool                 #
+    invoice_id: uuid.UUID | None = None
+    invoice_number: str | None = None
     delivery_status: Literal["non_livree", "partiellement_livree", "livree"]
     payment_status: Literal["impayee", "partiellement_payee", "payee"]
     amount_paid: Decimal
@@ -236,6 +241,7 @@ class SalesProformaCreate(BaseModel):
     client_id: uuid.UUID
     proforma_date: date
     notes: str | None = None
+    vat_applicable: bool = True
     items: list[ProformaItemCreate] = Field(min_length=1)
 
 
@@ -243,6 +249,7 @@ class SalesProformaUpdate(BaseModel):
     client_id: uuid.UUID | None = None
     proforma_date: date | None = None
     notes: str | None = None
+    vat_applicable: bool | None = None
     items: list[ProformaItemCreate] | None = None
 
 
@@ -263,6 +270,7 @@ class SalesProformaRead(BaseModel):
     client_name: str
     proforma_date: date
     status: Literal["en_cours", "convertie"]
+    vat_applicable: bool
     notes: str | None
     converted_sale_id: uuid.UUID | None
     converted_sale_number: str | None
@@ -350,4 +358,30 @@ class ClientPriceHint(BaseModel):
     sale_price: Decimal
     last_sale_date: date
     source: str
-    
+
+
+class InvoiceItemRead(BaseModel):
+    id: uuid.UUID
+    designation: str
+    quantity: int
+    unit: str
+    sale_price: Decimal
+    line_total: Decimal
+
+
+class SalesInvoiceRead(BaseModel):
+    id: uuid.UUID
+    invoice_number: str
+    sales_order_id: uuid.UUID | None
+    sale_number: str | None
+    client_id: uuid.UUID
+    client_name: str
+    invoice_date: date
+    vat_applicable: bool
+    total_ht: Decimal
+    vat_amount: Decimal
+    total_ttc: Decimal
+    notes: str | None
+    items: list[InvoiceItemRead]
+    diverged: bool              # la vente a-t-elle été modifiée depuis l'émission ?
+    created_at: datetime

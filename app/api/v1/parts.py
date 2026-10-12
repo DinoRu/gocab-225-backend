@@ -1,13 +1,14 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
 from datetime import date
 from app.api.deps import SessionDep
 from app.core.pagination import PaginationDep
 from app.schemas.common import Page, to_page
-from app.schemas.part import PartCreate, PartDetail, PartRead, PartUpdate
+from app.schemas.part import PartBulkCreateInput, PartCreate, PartDetail, PartRead, PartUpdate, PartBulkRead
+from app.schemas.bulk import BulkResult
 from app.services.part import PartService
 from app.schemas.part import PartOrderHistoryRow
 from app.api.auth_deps import AdminOnly, AnyUser
@@ -40,6 +41,25 @@ async def list_parts(
 @router.post("", response_model=PartDetail, status_code=status.HTTP_201_CREATED)
 async def create_part(payload: PartCreate, service: ServiceDep, _user: AnyUser):
     return await service.create(payload)
+
+
+@router.get("/next-reference")
+async def next_part_reference(session: SessionDep):
+    ref = await PartService(session).next_reference()
+    return {"reference": ref}
+
+
+@router.post("/bulk", response_model=BulkResult[PartBulkRead, dict])
+async def bulk_create_parts(payload: PartBulkCreateInput, service: ServiceDep, _user: AnyUser, response: Response):
+    result = await service.bulk_create(payload.atomic, payload.items)
+    s = result["summary"]
+    if s["failed"] == 0:
+        response.status_code = status.HTTP_201_CREATED
+    elif s["committed"]:
+        response.status_code = status.HTTP_207_MULTI_STATUS
+    else:
+        response.status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    return result
 
 
 @router.get("/{part_id}", response_model=PartDetail)

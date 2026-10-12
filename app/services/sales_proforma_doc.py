@@ -74,11 +74,16 @@ def build_proforma_pdf(pf: dict) -> BytesIO:
     tva = vat_amount(ht)
     ttc = ht + tva
 
-    totals_data = [
-        ["", "Total HT", _fcfa(ht)],
-        ["", "TVA (18%)", _fcfa(tva)],
-        ["", "Total TTC", _fcfa(ttc)],
-    ]
+    if pf.get("vat_applicable", True):
+        totals_data = [
+            ["", "Total HT", _fcfa(ht)],
+            ["", "TVA (18%)", _fcfa(tva)],
+            ["", "Total TTC", _fcfa(ttc)],
+        ]
+    else:
+        totals_data = [
+            ["", "TOTAL", _fcfa(ht)],      # pas de TVA, juste le total
+        ]
     totals_table = Table(totals_data, colWidths=[105 * mm, 35 * mm, 35 * mm])
     totals_table.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 9),

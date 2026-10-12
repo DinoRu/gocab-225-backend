@@ -5,6 +5,34 @@ from decimal import Decimal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# ---------- Marques ----------
+class TariffBrandCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+class TariffBrandRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: uuid.UUID
+    name: str
+
+
+# ---------- Modèles ----------
+class TariffModelCreate(BaseModel):
+    brand_id: uuid.UUID
+    name: str = Field(min_length=1, max_length=120)
+
+
+class TariffModelRead(BaseModel):
+    id: uuid.UUID
+    brand_id: uuid.UUID
+    brand_name: str
+    name: str
+
+
+class TariffModelsBulkCreate(BaseModel):
+    brand_id: uuid.UUID
+    names: list[str] = Field(min_length=1)
+
+
 # ---------- Fournisseurs ----------
 class TariffSupplierCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
@@ -34,12 +62,14 @@ class TariffSupplierRead(BaseModel):
 class TariffArticleCreate(BaseModel):
     reference: str | None = Field(default=None, max_length=100)
     designation: str = Field(min_length=1, max_length=255)
+    model_id: uuid.UUID                     # ← obligatoire
     notes: str | None = None
 
 
 class TariffArticleUpdate(BaseModel):
     reference: str | None = Field(default=None, max_length=100)
     designation: str | None = Field(default=None, min_length=1, max_length=255)
+    model_id: uuid.UUID | None = None
     notes: str | None = None
 
 
@@ -47,6 +77,9 @@ class TariffArticleRead(BaseModel):
     id: uuid.UUID
     reference: str | None
     designation: str
+    model_id: uuid.UUID
+    brand_name: str                         # ← pour l'affichage
+    model_name: str  
     notes: str | None
     supplier_count: int          # combien de fournisseurs ont un prix
     best_price: Decimal | None   # le moins cher parmi les derniers prix

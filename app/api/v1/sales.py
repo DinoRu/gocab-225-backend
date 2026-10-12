@@ -15,8 +15,10 @@ from app.schemas.sales import (
     SalesOrderCreate, SalesOrderRead, SalesOrderUpdate,
     SalesPaymentCreate, SalesPaymentRead, ClientLedgerRead,
     SalesProformaCreate, SalesProformaRead, SalesProformaUpdate, ProformaConvertInput,
-    DeliveryNoteCreate, DeliveryNoteRead, DeliverableSale
+    DeliveryNoteCreate, DeliveryNoteRead, DeliverableSale, SalesInvoiceRead
 )
+from app.services.sales_invoice import SalesInvoiceService
+from app.services.sales_invoice_doc import build_invoice_pdf
 from app.services.sales import (
     SalesClientService, SalesProductService, SalesOrderService, compute_payment_status
 )
@@ -172,6 +174,25 @@ async def update_sale_lines(order_id: UUID, payload: SaleLinesUpdate, session: S
 async def delete_sale(order_id: UUID, session: SessionDep):
     await SalesOrderService(session).delete(order_id)
     
+
+@router.post("/orders/{order_id}/invoice", response_model=SalesInvoiceRead, status_code=status.HTTP_201_CREATED)
+async def issue_invoice(order_id: UUID, session: SessionDep):
+    return await SalesInvoiceService(session).issue(order_id)
+
+
+@router.get("/orders/{order_id}/invoice", response_model=SalesInvoiceRead | None)
+async def get_order_invoice(order_id: UUID, session: SessionDep):
+    return await SalesInvoiceService(session).get_by_order(order_id)
+
+
+@router.get("/invoices/{invoice_id}/pdf")
+async def invoice_pdf(invoice_id: UUID, session: SessionDep):
+    inv = await SalesInvoiceService(session).get_detail(invoice_id)
+    buffer = build_invoice_pdf(inv)
+    filename = f"{inv['invoice_number']}.pdf"
+    return Response(content=buffer.getvalue(), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+    
 # ---------- Paiements ----------
 @router.get("/payments", response_model=Page[SalesPaymentRead])
 async def list_payments(
@@ -205,7 +226,6 @@ async def client_ledger(client_id: UUID, session: SessionDep):
     return await SalesPaymentService(session).client_ledger(client_id)
 
 
-
 @router.get("/clients/{client_id}/ledger/pdf")
 async def client_ledger_pdf(client_id: UUID, session: SessionDep):
     ledger = await SalesPaymentService(session).client_ledger(client_id)
@@ -214,7 +234,6 @@ async def client_ledger_pdf(client_id: UUID, session: SessionDep):
     filename = f"relevé_{safe_name}.pdf"
     return Response(content=buffer.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-
 
 
 @router.get("/proformas", response_model=Page[SalesProformaRead])
@@ -309,8 +328,8 @@ async def delivery_pdf(dn_id: UUID, session: SessionDep):
     filename = f"BL_{dn['delivery_number']}.pdf"
     return Response(content=buffer.getvalue(), media_type="application/pdf",
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
-    
-    
+
+
 # =============== Prix par client (marge, TVA, paiement) =========================
 @router.get("/price-hint", response_model=ClientPriceHint | None)
 async def price_hint(
@@ -323,3 +342,4 @@ async def price_hint(
     return await SalesOrderService(session).last_price_for_client(
         client_id=client_id, designation=designation, product_id=product_id,
     )
+

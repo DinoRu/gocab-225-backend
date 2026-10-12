@@ -24,7 +24,8 @@ def _sale_total_ht(so: SalesOrder) -> Decimal:
     return sum((it.sale_price * it.quantity for it in so.items), Decimal("0"))
 
 def _sale_total_ttc(so: SalesOrder) -> Decimal:
-    return ttc_amount(_sale_total_ht(so))
+    ht = _sale_total_ht(so)
+    return ttc_amount(ht) if so.vat_applicable else ht
 
 
 class SalesPaymentService:
